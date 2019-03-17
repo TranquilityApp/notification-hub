@@ -37,22 +37,35 @@ type connection struct {
 	closed bool
 }
 
+func IsClosed(ch <-chan []byte) bool {
+	select {
+	case <-ch:
+			return true
+	default:
+	}
+
+	return false
+}
+
 func (c *connection) close() {
 	if !c.closed {
 		if err := c.ws.Close(); err != nil {
 			c.hub.log.Println("[DEBUG] websocket was already closed:", err)
 		}
-		close(c.send)
+		if !IsClosed(c.send) {
+			close(c.send)
+		}
 		c.closed = true
 	}
 }
 
+// we only ever send to the server once on connection to specify the
+// subscriber
 func (c *connection) listenRead() {
 	defer func() {
 		c.hub.unregister <- c
 		c.close()
 	}()
-	c.hub.log.Println("listen read started")
 	c.ws.SetReadLimit(MaxMessageSize)
 	if err := c.ws.SetReadDeadline(time.Now().Add(PongWait)); err != nil {
 		c.hub.log.Println("[ERROR] failed to set socket read deadline:", err)
@@ -72,6 +85,7 @@ func (c *connection) listenRead() {
 			c.hub.log.Println("[ERROR] invalid data sent for subscription:", string(message))
 			continue
 		}
+
 		c.hub.subscribe <- s
 	}
 }

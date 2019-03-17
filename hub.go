@@ -73,6 +73,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.log.Println("[ERROR] failed to upgrade connection:", err)
 		return
 	}
+
 	c := &connection{send: make(chan []byte, 256), ws: ws, hub: h}
 	h.register <- c
 	go c.listenWrite()
@@ -138,7 +139,6 @@ func (h *Hub) doSubscribe(s *subscription) {
 		h.log.Println("[DEBUG] subscription tokenizer is not set, cannot validate subscriptions")
 		return
 	}
-
 	token := h.SubscriptionTokenizer.Tokenize(s.Username)
 	if token != s.Token {
 		h.log.Printf("[WARN] username [%s], token [%s] does not match given: [%s]\n", s.Username, token, s.Token)
