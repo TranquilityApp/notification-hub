@@ -1,17 +1,12 @@
 package hub
 
-import "encoding/json"
-
-type Message struct {
-	Data  interface{} `json:"data"`
-	Topic string      `json:"topic"`
-}
-
-func (m *Message) bytes() ([]byte, error) {
-	return json.Marshal(m)
-}
-
 type MailMessage struct {
-	Message  *Message
-	Username string
+	Action  string `json:"action"`
+	Topic   string `json:"topic"`
+	Message string `json:"message"`
+}
+
+type ConnMessage struct {
+	AuthID      string `json:"AuthID"`
+	AccessToken string `json:"access_token"`
 }

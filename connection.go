@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"time"
 
-
 	"github.com/gorilla/websocket"
 )
 
@@ -19,15 +18,16 @@ var (
 	MaxMessageSize int64 = 64 * 1024
 )
 
-type subscription struct {
-	Username   string
-	Token      string
+type Subscription struct {
+	AuthID     string
+	Topic      string
 	connection *connection
 }
 
 type subscriber struct {
+	AuthID      string
 	connections map[*connection]bool
-	Username    string
+	topics      map[string]bool
 }
 
 type connection struct {
@@ -40,7 +40,7 @@ type connection struct {
 func IsClosed(ch <-chan []byte) bool {
 	select {
 	case <-ch:
-			return true
+		return true
 	default:
 	}
 
@@ -59,9 +59,10 @@ func (c *connection) close() {
 	}
 }
 
-// we only ever send to the server once on connection to specify the
-// subscriber
+// Reads message from the websocket connection to subscribe the user
 func (c *connection) listenRead() {
+	// when function completes, unregister this connection
+	// and close it
 	defer func() {
 		c.hub.unregister <- c
 		c.close()
@@ -74,23 +75,58 @@ func (c *connection) listenRead() {
 		return c.ws.SetReadDeadline(time.Now().Add(PongWait))
 	})
 	for {
-		_, message, err := c.ws.ReadMessage()
+		// read message from ws sent by client
+		_, wsMessage, err := c.ws.ReadMessage()
 		if err != nil {
 			c.hub.log.Println("[DEBUG] read message error:", err)
 			break
 		}
 
-		s := &subscription{connection: c}
-		if err := json.Unmarshal(message, s); err != nil {
-			c.hub.log.Println("[ERROR] invalid data sent for subscription:", string(message))
+		message := &MailMessage{}
+		// message contains the topic to which user is subscribing to
+		if err := json.Unmarshal(wsMessage, message); err != nil {
+			c.hub.log.Printf(
+				"[ERROR] invalid data sent for subscription:%v\n",
+				message,
+			)
 			continue
 		}
 
-		c.hub.subscribe <- s
+		if message.Action == "subscribe" {
+			// get the message embedded data
+			connData := ConnMessage{}
+			json.Unmarshal([]byte(message.Message), &connData)
+			// message contains the username as Auth0ID
+			// create the subscriptions
+			s := &Subscription{
+				AuthID:     connData.AuthID,
+				Topic:      connData.AuthID + ":BENotification",
+				connection: c,
+			}
+			c.hub.subscribe <- s
+			s = &Subscription{
+				AuthID:     connData.AuthID,
+				Topic:      connData.AuthID + ":FLNotification",
+				connection: c,
+			}
+			c.hub.subscribe <- s
+			s = &Subscription{
+				AuthID:     connData.AuthID,
+				Topic:      connData.AuthID + ":LCNotification",
+				connection: c,
+			}
+			c.hub.subscribe <- s
+			// defined in notification API
+			c.hub.InitSubscriberDataFunc(&connData)
+		} else if message.Action == "publish" {
+			c.hub.Publish(message)
+		}
 	}
 }
 
+// Listens to writes on to the connection
 func (c *connection) listenWrite() {
+	// write to connection
 	write := func(mt int, payload []byte) error {
 		if err := c.ws.SetWriteDeadline(time.Now().Add(WriteWait)); err != nil {
 			return err
@@ -98,24 +134,35 @@ func (c *connection) listenWrite() {
 		return c.ws.WriteMessage(mt, payload)
 	}
 	ticker := time.NewTicker(PingPeriod)
+
+	// when function ends, close connection
 	defer func() {
 		ticker.Stop()
 		c.close()
 	}()
+
 	for {
 		select {
+		// listen for messages
 		case message, ok := <-c.send:
 			if !ok {
-				if err := write(websocket.CloseMessage, []byte{}); err != nil {
-					c.hub.log.Println("[DEBUG] socket already closed:", err)
+				// ws was closed, so close on our end
+				err := write(websocket.CloseMessage, []byte{})
+				if err != nil {
+					c.hub.log.Println(
+						"[DEBUG] socket already closed:", err,
+					)
 				}
 				return
 			}
+			// write to ws
 			if err := write(websocket.TextMessage, message); err != nil {
-				c.hub.log.Println("[DEBUG] failed to write socket message:", err)
+				c.hub.log.Println(
+					"[DEBUG] failed to write socket message:", err,
+				)
 				return
 			}
-		case <-ticker.C:
+		case <-ticker.C: // ping pong ws connection
 			if err := write(websocket.PingMessage, []byte{}); err != nil {
 				c.hub.log.Println("[DEBUG] failed to ping socket:", err)
 				return
