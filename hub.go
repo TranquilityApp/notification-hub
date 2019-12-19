@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 
@@ -19,6 +20,19 @@ var (
 	ReadBufferSize  int = 1024
 	WriteBufferSize int = 1024
 )
+
+type Application struct {
+	Hub
+}
+
+// Creates a new instance of the application,
+// instantiatiing a Hub struct.
+func NewApp() *Application {
+	app := &Application{
+		Hub: *NewHub(os.Stdout, "*"),
+	}
+	return app
+}
 
 type Hub struct {
 	sync.Mutex                              // protects connections
