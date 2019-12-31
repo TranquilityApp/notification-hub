@@ -15,6 +15,7 @@ import (
 )
 
 type initSubscriberDataFunc func(m *ConnMessage)
+type lcMessageFunc func(m *MailMessage)
 
 var (
 	ReadBufferSize  int = 1024
@@ -49,6 +50,7 @@ type Hub struct {
 	Mailbox chan *MailMessage // fan out message to subscriber
 
 	InitSubscriberDataFunc initSubscriberDataFunc
+	LCMessageFunc          lcMessageFunc
 }
 
 // Instantiates the Hub.
