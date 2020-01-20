@@ -113,6 +113,12 @@ func (c *connection) listenRead() {
 			c.hub.subscribe <- s
 			s = &Subscription{
 				AuthID:     connData.AuthID,
+				Topic:      connData.AuthID + ":ECNotification",
+				connection: c,
+			}
+			c.hub.subscribe <- s
+			s = &Subscription{
+				AuthID:     connData.AuthID,
 				Topic:      connData.AuthID + ":LC",
 				connection: c,
 			}
