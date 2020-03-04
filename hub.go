@@ -130,9 +130,12 @@ func (h *Hub) doMailbox(m *MailMessage) {
 	h.Lock()
 	defer h.Unlock()
 
-	s, ok := h.subscribers[m.Topic]
+	sArray := strings.Split(m.Topic, ":")
+	authID := sArray[0]
+
+	s, ok := h.subscribers[authID]
 	if !ok {
-		h.log.Println("[DEBUG] there are no subscriptions from:", m.Topic)
+		h.log.Println("[DEBUG] there are no subscription from:", authID)
 		return
 	}
 
@@ -173,7 +176,7 @@ func (h *Hub) doSubscribe(s *Subscription) {
 
 	newSubscriber.connections[s.connection] = true
 	h.connections[s.connection] = newSubscriber
-	h.subscribers[s.Topic] = newSubscriber
+	h.subscribers[s.AuthID] = newSubscriber
 	h.log.Printf("[DEBUG] subscribed as %s to topic %s\n", s.AuthID, s.Topic)
 }
 

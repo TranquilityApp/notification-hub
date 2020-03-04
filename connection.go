@@ -92,7 +92,6 @@ func (c *connection) listenRead() {
 			)
 			continue
 		}
-
 		if message.Action == "subscribe" {
 			// get the message embedded data
 			connData := ConnMessage{}
@@ -101,25 +100,25 @@ func (c *connection) listenRead() {
 			// create the subscriptions
 			s := &Subscription{
 				AuthID:     connData.AuthID,
-				Topic:      connData.AuthID + ":BENotification",
+				Topic:      "BENotification",
 				connection: c,
 			}
 			c.hub.subscribe <- s
 			s = &Subscription{
 				AuthID:     connData.AuthID,
-				Topic:      connData.AuthID + ":FLNotification",
+				Topic:      "FLNotification",
 				connection: c,
 			}
 			c.hub.subscribe <- s
 			s = &Subscription{
 				AuthID:     connData.AuthID,
-				Topic:      connData.AuthID + ":ECNotification",
+				Topic:      "ECNotification",
 				connection: c,
 			}
 			c.hub.subscribe <- s
 			s = &Subscription{
 				AuthID:     connData.AuthID,
-				Topic:      connData.AuthID + ":LC",
+				Topic:      "LC",
 				connection: c,
 			}
 			c.hub.subscribe <- s
