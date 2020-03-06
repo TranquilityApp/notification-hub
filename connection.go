@@ -38,22 +38,11 @@ type connection struct {
 	closed bool
 }
 
-func IsClosed(ch <-chan []byte) bool {
-	select {
-	case <-ch:
-		return true
-	default:
-	}
-
-	return false
-}
-
 func (c *connection) close() {
 	if !c.closed {
 		if err := c.ws.Close(); err != nil {
 			c.hub.log.Println("[DEBUG] websocket was already closed:", err)
-		}
-		if !IsClosed(c.send) {
+		} else {
 			close(c.send)
 		}
 		c.closed = true
@@ -66,7 +55,6 @@ func (c *connection) listenRead() {
 	// and close it
 	defer func() {
 		c.hub.unregister <- c
-		c.close()
 	}()
 	c.ws.SetReadLimit(MaxMessageSize)
 	if err := c.ws.SetReadDeadline(time.Now().Add(PongWait)); err != nil {
@@ -149,7 +137,6 @@ func (c *connection) listenWrite() {
 	// when function ends, close connection
 	defer func() {
 		ticker.Stop()
-		c.close()
 	}()
 
 	for {
