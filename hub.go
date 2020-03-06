@@ -204,15 +204,16 @@ func (h *Hub) doUnregister(c *connection) {
 		if len(s.connections) == 0 {
 			// there are no more open connections for this subscriber
 			h.log.Printf(
-				"[DEBUG] unsub: %s, no more open connections\n",
+				"[DEBUG] user %s has no more open connections, removing from hub's subscribers.\n",
 				s.AuthID,
 			)
 			delete(h.subscribers, s.AuthID)
 		}
 	}
 
-	h.log.Println("[DEBUG] unregistering socket connection")
+	h.log.Println("[DEBUG] closing connection's websocket and channel.")
 	c.close()
+	h.log.Println("[DEBUG] deleting connection from hub's connections.")
 	delete(h.connections, c)
 }
 

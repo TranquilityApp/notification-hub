@@ -43,6 +43,8 @@ func (c *connection) close() {
 		if err := c.ws.Close(); err != nil {
 			c.hub.log.Println("[DEBUG] websocket was already closed:", err)
 		} else {
+			c.hub.log.Println("[DEBUG] websocket closed.")
+			c.hub.log.Println("[DEBUG] closing connection's send channel.")
 			close(c.send)
 		}
 		c.closed = true
@@ -54,6 +56,7 @@ func (c *connection) listenRead() {
 	// when function completes, unregister this connection
 	// and close it
 	defer func() {
+		c.hub.log.Println("[DEBUG] Calling unregister from listenRead")
 		c.hub.unregister <- c
 	}()
 	c.ws.SetReadLimit(MaxMessageSize)
@@ -67,7 +70,7 @@ func (c *connection) listenRead() {
 		// read message from ws sent by client
 		_, wsMessage, err := c.ws.ReadMessage()
 		if err != nil {
-			c.hub.log.Println("[DEBUG] read message error:", err)
+			c.hub.log.Println("[DEBUG] read message error. Client probably closed connection:", err)
 			break
 		}
 
@@ -147,22 +150,18 @@ func (c *connection) listenWrite() {
 				// ws was closed, so close on our end
 				err := write(websocket.CloseMessage, []byte{})
 				if err != nil {
-					c.hub.log.Println(
-						"[DEBUG] socket already closed:", err,
-					)
+					c.hub.log.Println("[ERROR] socket already closed:", err)
 				}
 				return
 			}
 			// write to ws
 			if err := write(websocket.TextMessage, message); err != nil {
-				c.hub.log.Println(
-					"[DEBUG] failed to write socket message:", err,
-				)
+				c.hub.log.Println("[ERROR] failed to write socket message:", err)
 				return
 			}
 		case <-ticker.C: // ping pong ws connection
 			if err := write(websocket.PingMessage, []byte{}); err != nil {
-				c.hub.log.Println("[DEBUG] failed to ping socket:", err)
+				c.hub.log.Println("[ERROR] failed to ping socket:", err)
 				return
 			}
 		}
