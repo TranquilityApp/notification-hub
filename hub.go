@@ -144,6 +144,7 @@ func (h *Hub) doMailbox(m *MailMessage) {
 		h.log.Println("[ERROR] Unable to marshal message")
 	}
 
+	h.log.Println("[DEBUG] sending message to: ", s.AuthID)
 	h.log.Println("[DEBUG] subscriber connection count:", len(s.connections))
 	for c := range s.connections {
 		c.send <- bytes
