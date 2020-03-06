@@ -139,6 +139,9 @@ func (h *Hub) doMailbox(m *MailMessage) {
 		return
 	}
 
+	h.log.Println("Message info being sent:")
+	h.log.Println(m)
+
 	bytes, err := json.Marshal(m)
 	if err != nil {
 		h.log.Println("[ERROR] Unable to marshal message")
