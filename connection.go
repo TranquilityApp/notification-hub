@@ -160,7 +160,7 @@ func (c *connection) listenWrite() {
 				return
 			}
 		case <-ticker.C: // ping pong ws connection
-			if err := write(websocket.PingMessage, []byte{}); err != nil {
+			if err := write(websocket.PingMessage, []byte{'p', 'i', 'n', 'g'}); err != nil {
 				c.hub.log.Println("[ERROR] failed to ping socket:", err)
 				return
 			}
