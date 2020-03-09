@@ -16,6 +16,7 @@ import (
 
 type initSubscriberDataFunc func(m *ConnMessage)
 type lcMessageFunc func(m *MailMessage)
+type lcDeleteMessageFunc func(m *MailMessage)
 
 var (
 	ReadBufferSize  int = 1024
@@ -51,6 +52,7 @@ type Hub struct {
 
 	InitSubscriberDataFunc initSubscriberDataFunc
 	LCMessageFunc          lcMessageFunc
+	LCDeleteMessageFunc    lcDeleteMessageFunc
 }
 
 // Instantiates the Hub.
@@ -130,12 +132,9 @@ func (h *Hub) doMailbox(m *MailMessage) {
 	h.Lock()
 	defer h.Unlock()
 
-	sArray := strings.Split(m.Topic, ":")
-	authID := sArray[0]
-
-	s, ok := h.subscribers[authID]
+	s, ok := h.subscribers[m.DestinationUser]
 	if !ok {
-		h.log.Println("[DEBUG] there are no subscription from:", authID)
+		h.log.Println("[DEBUG] there are no subscriptions from:", m.DestinationUser)
 		return
 	}
 
