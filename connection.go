@@ -20,13 +20,13 @@ var (
 )
 
 type Subscription struct {
-	UserID     string
+	AuthID     string
 	Topic      string
 	connection *connection
 }
 
 type subscriber struct {
-	UserID      string
+	AuthID      string
 	connections map[*connection]bool
 	topics      map[string]bool
 }
@@ -38,22 +38,13 @@ type connection struct {
 	closed bool
 }
 
-func IsClosed(ch <-chan []byte) bool {
-	select {
-	case <-ch:
-		return true
-	default:
-	}
-
-	return false
-}
-
 func (c *connection) close() {
 	if !c.closed {
 		if err := c.ws.Close(); err != nil {
 			c.hub.log.Println("[DEBUG] websocket was already closed:", err)
-		}
-		if !IsClosed(c.send) {
+		} else {
+			c.hub.log.Println("[DEBUG] websocket closed.")
+			c.hub.log.Println("[DEBUG] closing connection's send channel.")
 			close(c.send)
 		}
 		c.closed = true
@@ -65,8 +56,8 @@ func (c *connection) listenRead() {
 	// when function completes, unregister this connection
 	// and close it
 	defer func() {
+		c.hub.log.Println("[DEBUG] Calling unregister from listenRead")
 		c.hub.unregister <- c
-		c.close()
 	}()
 	c.ws.SetReadLimit(MaxMessageSize)
 	if err := c.ws.SetReadDeadline(time.Now().Add(PongWait)); err != nil {
@@ -79,7 +70,7 @@ func (c *connection) listenRead() {
 		// read message from ws sent by client
 		_, wsMessage, err := c.ws.ReadMessage()
 		if err != nil {
-			c.hub.log.Println("[DEBUG] read message error:", err)
+			c.hub.log.Println("[DEBUG] read message error. Client probably closed connection:", err)
 			break
 		}
 
@@ -96,16 +87,41 @@ func (c *connection) listenRead() {
 			// get the message embedded data
 			connData := ConnMessage{}
 			json.Unmarshal([]byte(message.Message), &connData)
-			// message contains the userID
+			// message contains the username as Auth0ID
 			// create the subscriptions
 			s := &Subscription{
-				UserID:     connData.UserID,
-				Topic:      connData.Topic,
+				AuthID:     connData.AuthID,
+				Topic:      "BENotification",
 				connection: c,
 			}
 			c.hub.subscribe <- s
+			s = &Subscription{
+				AuthID:     connData.AuthID,
+				Topic:      "FLNotification",
+				connection: c,
+			}
+			c.hub.subscribe <- s
+			s = &Subscription{
+				AuthID:     connData.AuthID,
+				Topic:      "ECNotification",
+				connection: c,
+			}
+			c.hub.subscribe <- s
+			s = &Subscription{
+				AuthID:     connData.AuthID,
+				Topic:      "LC",
+				connection: c,
+			}
+			c.hub.subscribe <- s
+			// defined in notification API
+			c.hub.InitSubscriberDataFunc(&connData)
 		} else if message.Action == "publish" {
-			c.hub.Publish(message)
+			topicSplit := strings.Split(message.Topic, ":")
+			if topicSplit[1] == "LC" {
+				c.hub.LCMessageFunc(message)
+			} else {
+				c.hub.Publish(message)
+			}
 		}
 	}
 }
@@ -124,7 +140,6 @@ func (c *connection) listenWrite() {
 	// when function ends, close connection
 	defer func() {
 		ticker.Stop()
-		c.close()
 	}()
 
 	for {
@@ -135,22 +150,18 @@ func (c *connection) listenWrite() {
 				// ws was closed, so close on our end
 				err := write(websocket.CloseMessage, []byte{})
 				if err != nil {
-					c.hub.log.Println(
-						"[DEBUG] socket already closed:", err,
-					)
+					c.hub.log.Println("[ERROR] socket already closed:", err)
 				}
 				return
 			}
 			// write to ws
 			if err := write(websocket.TextMessage, message); err != nil {
-				c.hub.log.Println(
-					"[DEBUG] failed to write socket message:", err,
-				)
+				c.hub.log.Println("[ERROR] failed to write socket message:", err)
 				return
 			}
 		case <-ticker.C: // ping pong ws connection
-			if err := write(websocket.PingMessage, []byte{}); err != nil {
-				c.hub.log.Println("[DEBUG] failed to ping socket:", err)
+			if err := write(websocket.PingMessage, []byte{'p', 'i', 'n', 'g'}); err != nil {
+				c.hub.log.Println("[ERROR] failed to ping socket:", err)
 				return
 			}
 		}

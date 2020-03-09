@@ -14,6 +14,9 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+type initSubscriberDataFunc func(m *ConnMessage)
+type lcMessageFunc func(m *MailMessage)
+
 var (
 	ReadBufferSize  int = 1024
 	WriteBufferSize int = 1024
@@ -45,6 +48,9 @@ type Hub struct {
 	subscribe      chan *Subscription // subscribe as user
 
 	Mailbox chan *MailMessage // fan out message to subscriber
+
+	InitSubscriberDataFunc initSubscriberDataFunc
+	LCMessageFunc          lcMessageFunc
 }
 
 // Instantiates the Hub.
@@ -98,7 +104,6 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// create the connection
 	c := &connection{send: make(chan []byte, 256), ws: ws, hub: h}
-
 	// registers the connection to the hub by prepping the hub for the connection
 	// by setting it to nil
 	h.register <- c
@@ -107,83 +112,79 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c.listenRead()
 }
 
-// Connections retrieves the length of connections that the hub has.
 func (h *Hub) Connections() int {
 	h.Lock()
 	defer h.Unlock()
 	return len(h.connections)
 }
 
-// doRegister prepares the Hub for the connection by setting it to nil
+// Prepares the Hub for the connection by setting it to nil
 func (h *Hub) doRegister(c *connection) {
 	h.Lock()
 	defer h.Unlock()
 	h.connections[c] = nil
 }
 
-// doMailbox sends a message to all connections a subscriber has.
+// sends a message to all connections a subscriber has
 func (h *Hub) doMailbox(m *MailMessage) {
 	h.Lock()
 	defer h.Unlock()
 
-	s, ok := h.subscribers[m.UserID]
+	sArray := strings.Split(m.Topic, ":")
+	authID := sArray[0]
+
+	s, ok := h.subscribers[authID]
 	if !ok {
 		h.log.Println("[DEBUG] there are no subscription from:", authID)
 		return
 	}
 
-	bytes, err := json.Marshal(m)
-	if err != nil {
-		h.log.Println("[ERROR] Unable to marshal message")
-	}
-
-	h.log.Println("[DEBUG] subscriber connection count:", len(s.connections))
-	for c := range s.connections {
-		c.send <- bytes
-	}
-}
-
-// doBroadcast sends a message to all connections in the hub.
-func (h *Hub) doBroadcast(m *MailMessage) {
-	h.Lock()
-	defer h.Unlock()
+	h.log.Println("Message info being sent:")
+	h.log.Println(m)
 
 	bytes, err := json.Marshal(m)
 	if err != nil {
 		h.log.Println("[ERROR] Unable to marshal message")
 	}
 
+	h.log.Println("[DEBUG] sending message to: ", s.AuthID)
 	h.log.Println("[DEBUG] subscriber connection count:", len(s.connections))
 	for c := range s.connections {
 		c.send <- bytes
 	}
 }
 
-// doSubscribe subscribes a user to a topic.
+// Occurs after the subscription has been created in the listenRead
+// method of the connection. This function checks for an existing
+// subscriber of the topic the subscriber wishes to subscribe to, and if it
+// doesn't exist, establishes it as a new subscription (subscription has multiple conns)
 func (h *Hub) doSubscribe(s *Subscription) {
 	h.Lock()
 	defer h.Unlock()
 
-	// check if this user is already a subscriber. If not then create the subscription
-	newSubscriber, alreadyAvailable := h.subscribers[s.UserID]
+	// check if there already is a subscriber, if not then create the subscription
+	newSubscriber, alreadyAvailable := h.subscribers[s.AuthID]
 	if !alreadyAvailable {
 		// subscriber doesn't exist yet, create a new one
 		newSubscriber = &subscriber{
-			UserID:      s.UserID,
+			AuthID:      s.AuthID,
 			connections: make(map[*connection]bool),
 			topics:      make(map[string]bool, 0),
 		}
 	}
 
-	newSubscriber.topics[s.Topic] = true           // subscribe to topic
-	newSubscriber.connections[s.connection] = true // add the subscription's connection to the subscriber's connection pool
-	h.connections[s.connection] = newSubscriber    // add the connection to the hub's pool of connections
-	h.subscribers[s.UserID] = newSubscriber        // add the subscriber to the hub's pool of subscriptions
+	_, alreadyTaken := newSubscriber.topics[s.Topic]
+	if !alreadyTaken {
+		newSubscriber.topics[s.Topic] = true
+	}
 
-	h.log.Printf("[DEBUG] subscribed as %s to topic %s\n", s.UserID, s.Topic)
+	newSubscriber.connections[s.connection] = true
+	h.connections[s.connection] = newSubscriber
+	h.subscribers[s.AuthID] = newSubscriber
+	h.log.Printf("[DEBUG] subscribed as %s to topic %s\n", s.AuthID, s.Topic)
 }
 
-// doUnregister unregisters a connection from the hub.
+// Unregisters a connection from the hub
 func (h *Hub) doUnregister(c *connection) {
 	h.Lock()
 	defer h.Unlock()
@@ -191,37 +192,44 @@ func (h *Hub) doUnregister(c *connection) {
 	// get the subscriber
 	s, ok := h.connections[c]
 	if !ok {
-		h.log.Println("[WARN] cannot unregister connection, it is not registered.")
+		h.log.Println(
+			"[WARN] cannot unregister connection, it is not registered.",
+		)
 		return
 	}
 
 	if s != nil {
-		h.log.Printf("[DEBUG] unregistering one of subscribers: %s connections\n", s.UserID)
+		h.log.Printf(
+			"[DEBUG] unregistering one of subscribers: %s connections\n",
+			s.AuthID,
+		)
 		// delete the connection from subscriber's connections
 		delete(s.connections, c)
 		if len(s.connections) == 0 {
-			h.log.Printf("[DEBUG] unsub: %s, no more open connections\n", s.UserID)
-			delete(h.subscribers, s.UserID)
+			// there are no more open connections for this subscriber
+			h.log.Printf(
+				"[DEBUG] user %s has no more open connections, removing from hub's subscribers.\n",
+				s.AuthID,
+			)
+			delete(h.subscribers, s.AuthID)
 		}
 	}
 
-	h.log.Println("[DEBUG] unregistering socket connection")
+	h.log.Println("[DEBUG] closing connection's websocket and channel.")
 	c.close()
+	h.log.Println("[DEBUG] deleting connection from hub's connections.")
 	delete(h.connections, c)
 }
 
-// checkOrigin looks at the request's Origin header for only allowable origins.
 func (h *Hub) checkOrigin(r *http.Request) bool {
 	origin := r.Header["Origin"]
 	if len(origin) == 0 {
 		return true
 	}
-
 	u, err := url.Parse(origin[0])
 	if err != nil {
 		return false
 	}
-
 	var allow bool
 	for _, o := range h.allowedOrigins {
 		if o == u.Host {
@@ -233,33 +241,36 @@ func (h *Hub) checkOrigin(r *http.Request) bool {
 			break
 		}
 	}
-
 	if !allow {
-		h.log.Printf("[DEBUG] none of allowed origins: %s matched: %s\n", strings.Join(h.allowedOrigins, ", "), u.Host)
+		h.log.Printf(
+			"[DEBUG] none of allowed origins: %s matched: %s\n",
+			strings.Join(h.allowedOrigins, ", "),
+			u.Host,
+		)
 	}
-
 	return allow
 }
 
-// Publish notifies the topic with a MailMessage.
+// Notifies the topic with a message
 func (h *Hub) Publish(m *MailMessage) {
+	// notify each subscriber of a topic
 	if len(m.Topic) > 0 {
 		h.Mailbox <- m
 	}
 	return
 }
 
-// Run starts the Hub.
+// Starts the Hub.
 func (h *Hub) Run() {
 	for {
 		select {
-		case c := <-h.register:
+		case c := <-h.register: // Registers user to hub
 			h.doRegister(c)
-		case c := <-h.unregister:
+		case c := <-h.unregister: // Unregisteres user from hub
 			h.doUnregister(c)
-		case m := <-h.Mailbox:
+		case m := <-h.Mailbox: // Sends message to a mailbox
 			h.doMailbox(m)
-		case s := <-h.subscribe:
+		case s := <-h.subscribe: // Subscribes a user to the hub
 			h.doSubscribe(s)
 		}
 	}
