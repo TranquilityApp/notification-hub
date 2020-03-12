@@ -2,7 +2,6 @@ package hub
 
 import (
 	"encoding/json"
-	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -109,16 +108,19 @@ func (c *connection) listenRead() {
 			c.hub.subscribe <- s
 			s = &Subscription{
 				AuthID:     connData.AuthID,
-				Topic:      "LC",
+				Topic:      "chat",
 				connection: c,
 			}
 			c.hub.subscribe <- s
 			// defined in notification API
 			c.hub.InitSubscriberDataFunc(&connData)
 		} else if message.Action == "publish" {
-			topicSplit := strings.Split(message.Topic, ":")
-			if topicSplit[1] == "LC" {
-				c.hub.LCMessageFunc(message)
+			if message.Topic == "chat" {
+				if message.SubTopic == "DELETE_MESSAGE" {
+					c.hub.LCDeleteMessageFunc(message)
+				} else {
+					c.hub.LCMessageFunc(message)
+				}
 			} else {
 				c.hub.Publish(message)
 			}
