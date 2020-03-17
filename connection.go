@@ -27,7 +27,6 @@ type Subscription struct {
 type subscriber struct {
 	AuthID      string
 	connections map[*connection]bool
-	topics      map[string]bool
 }
 
 type connection struct {

@@ -1,7 +1,7 @@
 package hub
 
 import (
-	"encoding/json"
+	//"encoding/json"
 	"io"
 	"io/ioutil"
 	"log"
@@ -40,6 +40,7 @@ type Hub struct {
 	sync.Mutex                              // protects connections
 	connections map[*connection]*subscriber // simple to close or remove connections
 	subscribers map[string]*subscriber      // simple to find subscriber based on identifier string
+	topics      map[string][]*subscriber    // key is topic, value is subscribers
 
 	log            *log.Logger
 	allowedOrigins []string
@@ -132,25 +133,30 @@ func (h *Hub) doMailbox(m *MailMessage) {
 	h.Lock()
 	defer h.Unlock()
 
-	s, ok := h.subscribers[m.DestinationUser]
+	subscribers, ok := h.topics[m.Topic]
 	if !ok {
-		h.log.Println("[DEBUG] there are no subscriptions from:", m.DestinationUser)
+		h.log.Println("[DEBUG] there are no subscriptions from:", m.Topic)
 		return
 	}
 
 	h.log.Println("Message info being sent:")
 	h.log.Println(m)
 
-	bytes, err := json.Marshal(m)
-	if err != nil {
-		h.log.Println("[ERROR] Unable to marshal message")
-	}
+	//bytes, err := json.Marshal(m)
+	//if err != nil {
+	//	h.log.Println("[ERROR] Unable to marshal message")
+	//}
 
-	h.log.Println("[DEBUG] sending message to: ", s.AuthID)
-	h.log.Println("[DEBUG] subscriber connection count:", len(s.connections))
-	for c := range s.connections {
-		c.send <- bytes
+	h.log.Println("[DEBUG] sending message to topic: ", m.Topic)
+	connectionCount := 0
+	for s := range subscribers {
+		h.log.Println(s)
+		//for c := range s.connections {
+		//	c.send <- bytes
+		//	connectionCount += 1
+		//}
 	}
+	h.log.Println("[DEBUG] subscriber connection count:", connectionCount)
 }
 
 // Occurs after the subscription has been created in the listenRead
@@ -168,15 +174,10 @@ func (h *Hub) doSubscribe(s *Subscription) {
 		newSubscriber = &subscriber{
 			AuthID:      s.AuthID,
 			connections: make(map[*connection]bool),
-			topics:      make(map[string]bool, 0),
 		}
 	}
 
-	_, alreadyTaken := newSubscriber.topics[s.Topic]
-	if !alreadyTaken {
-		newSubscriber.topics[s.Topic] = true
-	}
-
+	h.topics[s.Topic] = append(h.topics[s.Topic], newSubscriber)
 	newSubscriber.connections[s.connection] = true
 	h.connections[s.connection] = newSubscriber
 	h.subscribers[s.AuthID] = newSubscriber
