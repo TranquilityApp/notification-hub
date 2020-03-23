@@ -8,6 +8,7 @@ type MailMessage struct {
 }
 
 type ConnMessage struct {
-	AuthID      string `json:"AuthID"`
-	AccessToken string `json:"access_token"`
+	AuthID          string `json:"AuthID"`
+	AccessToken     string `json:"access_token"`
+	ImpersonationID int    `json:"impersonationID"`
 }
