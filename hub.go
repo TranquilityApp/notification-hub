@@ -1,7 +1,7 @@
 package hub
 
 import (
-	//"encoding/json"
+	"encoding/json"
 	"io"
 	"io/ioutil"
 	"log"
@@ -68,6 +68,7 @@ func NewHub(logOutput io.Writer, origins ...string) *Hub {
 		subscribers:    make(map[string]*subscriber),
 		subscribe:      make(chan *Subscription),
 		Mailbox:        make(chan *MailMessage),
+		topics:         make(map[string][]*subscriber),
 	}
 
 	factory := websocket.Upgrader{
@@ -142,19 +143,20 @@ func (h *Hub) doMailbox(m *MailMessage) {
 	h.log.Println("Message info being sent:")
 	h.log.Println(m)
 
-	//bytes, err := json.Marshal(m)
-	//if err != nil {
-	//	h.log.Println("[ERROR] Unable to marshal message")
-	//}
+	bytes, err := json.Marshal(m)
+	if err != nil {
+		h.log.Println("[ERROR] Unable to marshal message")
+	}
 
 	h.log.Println("[DEBUG] sending message to topic: ", m.Topic)
 	connectionCount := 0
-	for s := range subscribers {
-		h.log.Println(s)
-		//for c := range s.connections {
-		//	c.send <- bytes
-		//	connectionCount += 1
-		//}
+	for _, s := range subscribers {
+		h.log.Println("-----------------------")
+		h.log.Println(len(s.connections))
+		for c := range s.connections {
+			c.send <- bytes
+			connectionCount += 1
+		}
 	}
 	h.log.Println("[DEBUG] subscriber connection count:", connectionCount)
 }
