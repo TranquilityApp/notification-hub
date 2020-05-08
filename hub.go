@@ -14,8 +14,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-type initSubscriberDataFunc func(m *ConnMessage)
-type lcMessageFunc func(m *MailMessage)
+type initSubscriberDataFunc func(connMap map[string]interface{})
 type lcDeleteMessageFunc func(m *MailMessage)
 
 var (
@@ -52,7 +51,6 @@ type Hub struct {
 	Mailbox chan *MailMessage // fan out message to subscriber
 
 	InitSubscriberDataFunc initSubscriberDataFunc
-	LCMessageFunc          lcMessageFunc
 	LCDeleteMessageFunc    lcDeleteMessageFunc
 }
 
@@ -140,9 +138,6 @@ func (h *Hub) doMailbox(m *MailMessage) {
 		return
 	}
 
-	h.log.Println("Message info being sent:")
-	h.log.Println(m)
-
 	bytes, err := json.Marshal(m)
 	if err != nil {
 		h.log.Println("[ERROR] Unable to marshal message")
@@ -151,8 +146,6 @@ func (h *Hub) doMailbox(m *MailMessage) {
 	h.log.Println("[DEBUG] sending message to topic: ", m.Topic)
 	connectionCount := 0
 	for _, s := range subscribers {
-		h.log.Println("-----------------------")
-		h.log.Println(len(s.connections))
 		for c := range s.connections {
 			c.send <- bytes
 			connectionCount += 1

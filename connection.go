@@ -81,48 +81,25 @@ func (c *connection) listenRead() {
 			)
 			continue
 		}
+
 		if message.Action == "subscribe" {
 			// get the message embedded data
-			connData := ConnMessage{}
-			json.Unmarshal([]byte(message.Message), &connData)
-			// message contains the username as Auth0ID
-			// create the subscriptions
-			s := &Subscription{
-				AuthID:     connData.AuthID,
-				Topic:      "BENotification",
-				connection: c,
+			myMap := message.Message.(map[string]interface{})
+			topicsArr := make([]string, len(myMap["topics"].([]interface{})))
+			for idx, topic := range myMap["topics"].([]interface{}) {
+				topicsArr[idx] = topic.(string)
 			}
-			c.hub.subscribe <- s
-			s = &Subscription{
-				AuthID:     connData.AuthID,
-				Topic:      "FLNotification",
-				connection: c,
-			}
-			c.hub.subscribe <- s
-			s = &Subscription{
-				AuthID:     connData.AuthID,
-				Topic:      "ECNotification",
-				connection: c,
-			}
-			c.hub.subscribe <- s
-			s = &Subscription{
-				AuthID:     connData.AuthID,
-				Topic:      "chat",
-				connection: c,
-			}
-			c.hub.subscribe <- s
-			// defined in notification API
-			c.hub.InitSubscriberDataFunc(&connData)
-		} else if message.Action == "publish" {
-			if message.Topic == "chat" {
-				if message.SubTopic == "DELETE_MESSAGE" {
-					c.hub.LCDeleteMessageFunc(message)
-				} else {
-					c.hub.LCMessageFunc(message)
+
+			for _, topic := range topicsArr {
+				s := &Subscription{
+					AuthID:     myMap["AuthID"].(string),
+					Topic:      topic,
+					connection: c,
 				}
-			} else {
-				c.hub.Publish(message)
+				c.hub.subscribe <- s
 			}
+			// defined in notification API
+			c.hub.InitSubscriberDataFunc(myMap)
 		}
 	}
 }
