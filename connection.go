@@ -24,16 +24,12 @@ type Subscription struct {
 	connection *connection
 }
 
-type subscriber struct {
-	AuthID      string
-	connections map[*connection]bool
-}
-
 type connection struct {
 	ws     *websocket.Conn
 	send   chan []byte
 	hub    *Hub
 	closed bool
+	Topics []string
 }
 
 func (c *connection) close() {
@@ -83,12 +79,15 @@ func (c *connection) listenRead() {
 		}
 
 		if message.Action == "subscribe" {
+			c.hub.doUnsubscribeTopics(c)
 			// get the message embedded data
 			myMap := message.Message.(map[string]interface{})
 			topicsArr := make([]string, len(myMap["topics"].([]interface{})))
 			for idx, topic := range myMap["topics"].([]interface{}) {
 				topicsArr[idx] = topic.(string)
 			}
+
+			c.Topics = make([]string, 0)
 
 			for _, topic := range topicsArr {
 				s := &Subscription{
