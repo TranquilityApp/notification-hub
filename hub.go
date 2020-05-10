@@ -47,7 +47,7 @@ type Hub struct {
 	unregister     chan *connection   // unregister connection channel
 	subscribe      chan *Subscription // subscribe as user
 
-	Mailbox chan *MailMessage // fan out message to subscriber
+	Mailbox chan MailMessage // fan out message to subscriber
 
 	InitSubscriberDataFunc initSubscriberDataFunc
 	LCDeleteMessageFunc    lcDeleteMessageFunc
@@ -63,7 +63,7 @@ func NewHub(logOutput io.Writer, origins ...string) *Hub {
 		unregister:     make(chan *connection),
 		connections:    make(map[*connection]*Subscription),
 		subscribe:      make(chan *Subscription),
-		Mailbox:        make(chan *MailMessage),
+		Mailbox:        make(chan MailMessage),
 		topics:         make(map[string][]*connection),
 	}
 
@@ -126,7 +126,7 @@ func (h *Hub) doRegister(c *connection) {
 }
 
 // sends a message to all connections a subscriber has
-func (h *Hub) doMailbox(m *MailMessage) {
+func (h *Hub) doMailbox(m MailMessage) {
 	h.Lock()
 	defer h.Unlock()
 
@@ -292,7 +292,7 @@ func (h *Hub) checkOrigin(r *http.Request) bool {
 }
 
 // Notifies the topic with a message
-func (h *Hub) Publish(m *MailMessage) {
+func (h *Hub) Publish(m MailMessage) {
 	// notify each subscriber of a topic
 	if len(m.Topic) > 0 {
 		h.Mailbox <- m

@@ -81,9 +81,9 @@ func (c *connection) listenRead() {
 		if message.Action == "subscribe" {
 			c.hub.doUnsubscribeTopics(c)
 			// get the message embedded data
-			myMap := message.Message.(map[string]interface{})
-			topicsArr := make([]string, len(myMap["topics"].([]interface{})))
-			for idx, topic := range myMap["topics"].([]interface{}) {
+			msgMap := message.Message.(map[string]interface{})
+			topicsArr := make([]string, len(msgMap["topics"].([]interface{})))
+			for idx, topic := range msgMap["topics"].([]interface{}) {
 				topicsArr[idx] = topic.(string)
 			}
 
@@ -91,14 +91,14 @@ func (c *connection) listenRead() {
 
 			for _, topic := range topicsArr {
 				s := &Subscription{
-					AuthID:     myMap["AuthID"].(string),
+					AuthID:     msgMap["AuthID"].(string),
 					Topic:      topic,
 					connection: c,
 				}
 				c.hub.subscribe <- s
 			}
 			// defined in notification API
-			c.hub.InitSubscriberDataFunc(myMap)
+			c.hub.InitSubscriberDataFunc(msgMap)
 		}
 	}
 }
