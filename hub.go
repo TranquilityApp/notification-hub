@@ -14,8 +14,10 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-type initSubscriberDataFunc func(connMap map[string]interface{})
-type lcDeleteMessageFunc func(m *MailMessage)
+type Delegate interface {
+	InitSubscriberData(connMap map[string]interface{})
+	DeleteMsg(m *MailMessage)
+}
 
 var (
 	ReadBufferSize  int = 1024
@@ -47,10 +49,12 @@ type Hub struct {
 	unregister     chan *connection   // unregister connection channel
 	subscribe      chan *Subscription // subscribe as user
 
-	Mailbox chan MailMessage // fan out message to subscriber
+	Mailbox  chan MailMessage // fan out message to subscriber
+	Delegate Delegate
+}
 
-	InitSubscriberDataFunc initSubscriberDataFunc
-	LCDeleteMessageFunc    lcDeleteMessageFunc
+func InitSubscriberData(d Delegate, msgMap map[string]interface{}) {
+	d.InitSubscriberData(msgMap)
 }
 
 // Instantiates the Hub.
@@ -127,9 +131,9 @@ func (h *Hub) doRegister(c *connection) {
 
 // sends a message to all connections a subscriber has
 func (h *Hub) doMailbox(m MailMessage) {
-	h.Lock()
 	defer h.Unlock()
 
+	h.Lock()
 	connections, ok := h.topics[m.Topic]
 	if !ok {
 		h.log.Println("[DEBUG] there are no subscriptions from:", m.Topic)
@@ -182,11 +186,12 @@ func (h *Hub) doUnregister(c *connection) {
 
 	h.log.Println("[DEBUG] unregistering connection")
 
-	// remove each topic in the connection
+	// remove each connection from the hub's topic connections
 	for i := 0; i < len(c.Topics); i++ {
 		// remove connection from topics
 		connList := h.topics[c.Topics[i]]
 		foundIdx := -1
+		// find the index of this connection in the list of connections that are subscribed to this topic
 		for idx, conn := range connList {
 			if conn == c {
 				foundIdx = idx
@@ -194,7 +199,7 @@ func (h *Hub) doUnregister(c *connection) {
 			}
 		}
 
-		// remove connection from topic's connections
+		// use the found index to remove this connection from the topic's connections
 		if foundIdx != -1 {
 			h.topics[c.Topics[i]] = append(connList[:foundIdx], connList[foundIdx+1:]...)
 		}
