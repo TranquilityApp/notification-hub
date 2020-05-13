@@ -304,10 +304,6 @@ func (d fakeDelegate) InitSubscriberData(connMap map[string]interface{}) {
 	}
 }
 
-func (d fakeDelegate) DeleteMsg(m *MailMessage) {
-	fmt.Println("DeleteMsg fired")
-}
-
 func TestInitSubscriberData(t *testing.T) {
 	msgMap := map[string]interface{}{
 		"AuthID": "auth0|0000000",

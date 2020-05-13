@@ -16,7 +16,6 @@ import (
 
 type Delegate interface {
 	InitSubscriberData(connMap map[string]interface{})
-	DeleteMsg(m *MailMessage)
 }
 
 var (
