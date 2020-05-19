@@ -98,7 +98,7 @@ func (c *connection) listenRead() {
 				c.hub.subscribe <- s
 			}
 			// defined in notification API
-			c.hub.InitSubscriberDataFunc(msgMap)
+			InitSubscriberData(c.hub.Delegate, msgMap)
 		}
 	}
 }
