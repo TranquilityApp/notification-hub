@@ -14,8 +14,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-type initSubscriberDataFunc func(m *ConnMessage)
-type lcMessageFunc func(m *MailMessage)
+type initSubscriberDataFunc func(connMap map[string]interface{})
 type lcDeleteMessageFunc func(m *MailMessage)
 
 var (
@@ -37,9 +36,9 @@ func NewApp() *Application {
 }
 
 type Hub struct {
-	sync.Mutex                              // protects connections
-	connections map[*connection]*subscriber // simple to close or remove connections
-	subscribers map[string]*subscriber      // simple to find subscriber based on identifier string
+	sync.Mutex                                // protects connections
+	connections map[*connection]*Subscription // simple to close or remove connections
+	topics      map[string][]*connection      // key is topic, value is subscribers
 
 	log            *log.Logger
 	allowedOrigins []string
@@ -48,10 +47,9 @@ type Hub struct {
 	unregister     chan *connection   // unregister connection channel
 	subscribe      chan *Subscription // subscribe as user
 
-	Mailbox chan *MailMessage // fan out message to subscriber
+	Mailbox chan MailMessage // fan out message to subscriber
 
 	InitSubscriberDataFunc initSubscriberDataFunc
-	LCMessageFunc          lcMessageFunc
 	LCDeleteMessageFunc    lcDeleteMessageFunc
 }
 
@@ -63,10 +61,10 @@ func NewHub(logOutput io.Writer, origins ...string) *Hub {
 		allowedOrigins: origins,
 		register:       make(chan *connection),
 		unregister:     make(chan *connection),
-		connections:    make(map[*connection]*subscriber),
-		subscribers:    make(map[string]*subscriber),
+		connections:    make(map[*connection]*Subscription),
 		subscribe:      make(chan *Subscription),
-		Mailbox:        make(chan *MailMessage),
+		Mailbox:        make(chan MailMessage),
+		topics:         make(map[string][]*connection),
 	}
 
 	factory := websocket.Upgrader{
@@ -128,27 +126,24 @@ func (h *Hub) doRegister(c *connection) {
 }
 
 // sends a message to all connections a subscriber has
-func (h *Hub) doMailbox(m *MailMessage) {
+func (h *Hub) doMailbox(m MailMessage) {
 	h.Lock()
 	defer h.Unlock()
 
-	s, ok := h.subscribers[m.DestinationUser]
+	connections, ok := h.topics[m.Topic]
 	if !ok {
-		h.log.Println("[DEBUG] there are no subscriptions from:", m.DestinationUser)
+		h.log.Println("[DEBUG] there are no subscriptions from:", m.Topic)
 		return
 	}
-
-	h.log.Println("Message info being sent:")
-	h.log.Println(m)
 
 	bytes, err := json.Marshal(m)
 	if err != nil {
 		h.log.Println("[ERROR] Unable to marshal message")
 	}
 
-	h.log.Println("[DEBUG] sending message to: ", s.AuthID)
-	h.log.Println("[DEBUG] subscriber connection count:", len(s.connections))
-	for c := range s.connections {
+	h.log.Println("[DEBUG] sending message to topic: ", m.Topic)
+	h.log.Println("[DEBUG] topic connection count:", len(connections))
+	for _, c := range connections {
 		c.send <- bytes
 	}
 }
@@ -161,25 +156,15 @@ func (h *Hub) doSubscribe(s *Subscription) {
 	h.Lock()
 	defer h.Unlock()
 
-	// check if there already is a subscriber, if not then create the subscription
-	newSubscriber, alreadyAvailable := h.subscribers[s.AuthID]
-	if !alreadyAvailable {
-		// subscriber doesn't exist yet, create a new one
-		newSubscriber = &subscriber{
-			AuthID:      s.AuthID,
-			connections: make(map[*connection]bool),
-			topics:      make(map[string]bool, 0),
-		}
+	s.connection.Topics = append(s.connection.Topics, s.Topic)
+
+	if _, ok := h.topics[s.Topic]; !ok {
+		h.topics[s.Topic] = make([]*connection, 0)
 	}
 
-	_, alreadyTaken := newSubscriber.topics[s.Topic]
-	if !alreadyTaken {
-		newSubscriber.topics[s.Topic] = true
-	}
+	h.topics[s.Topic] = append(h.topics[s.Topic], s.connection) // only add topic to hub if it isn't already there
 
-	newSubscriber.connections[s.connection] = true
-	h.connections[s.connection] = newSubscriber
-	h.subscribers[s.AuthID] = newSubscriber
+	h.connections[s.connection] = s
 	h.log.Printf("[DEBUG] subscribed as %s to topic %s\n", s.AuthID, s.Topic)
 }
 
@@ -189,28 +174,40 @@ func (h *Hub) doUnregister(c *connection) {
 	defer h.Unlock()
 
 	// get the subscriber
-	s, ok := h.connections[c]
+	_, ok := h.connections[c]
 	if !ok {
-		h.log.Println(
-			"[WARN] cannot unregister connection, it is not registered.",
-		)
+		h.log.Println("[WARN] cannot unregister connection, it is not registered.")
 		return
 	}
 
-	if s != nil {
-		h.log.Printf(
-			"[DEBUG] unregistering one of subscribers: %s connections\n",
-			s.AuthID,
-		)
-		// delete the connection from subscriber's connections
-		delete(s.connections, c)
-		if len(s.connections) == 0 {
-			// there are no more open connections for this subscriber
-			h.log.Printf(
-				"[DEBUG] user %s has no more open connections, removing from hub's subscribers.\n",
-				s.AuthID,
-			)
-			delete(h.subscribers, s.AuthID)
+	h.log.Println("[DEBUG] unregistering connection")
+
+	// remove each topic in the connection
+	for i := 0; i < len(c.Topics); i++ {
+		// remove connection from topics
+		connList := h.topics[c.Topics[i]]
+		foundIdx := -1
+		for idx, conn := range connList {
+			if conn == c {
+				foundIdx = idx
+				break
+			}
+		}
+
+		// remove connection from topic's connections
+		if foundIdx != -1 {
+			h.topics[c.Topics[i]] = append(connList[:foundIdx], connList[foundIdx+1:]...)
+		}
+	}
+
+	// check if the topic needs to be deleted from the hub by cycling through this subscriber's
+	// topics.
+	for _, topic := range c.Topics {
+		// delete from array of topic's subscribers
+		if len(h.topics[topic]) == 0 {
+			// topic had 1 last subscriber
+			h.log.Println("[DEBUG] topic has no more connections, deleting from hub.")
+			delete(h.topics, topic)
 		}
 	}
 
@@ -218,6 +215,50 @@ func (h *Hub) doUnregister(c *connection) {
 	c.close()
 	h.log.Println("[DEBUG] deleting connection from hub's connections.")
 	delete(h.connections, c)
+}
+
+func (h *Hub) doUnsubscribeTopics(c *connection) {
+	h.Lock()
+	defer h.Unlock()
+
+	_, ok := h.connections[c]
+	if !ok {
+		h.log.Println("[WARN] cannot unsubscribe from topics, connection is not registered.")
+		return
+	}
+
+	// remove each topic in the connection
+	for i := 0; i < len(c.Topics); i++ {
+		// remove connection from topics
+		connList := h.topics[c.Topics[i]]
+		foundIdx := -1
+		for idx, conn := range connList {
+			if conn == c {
+				foundIdx = idx
+				break
+			}
+		}
+
+		// remove connection from topic's connections
+		if foundIdx != -1 {
+			h.topics[c.Topics[i]] = append(connList[:foundIdx], connList[foundIdx+1:]...)
+		}
+	}
+
+	// check if the topic needs to be deleted from the hub by cycling through this subscriber's
+	// topics.
+	for _, topic := range c.Topics {
+		// delete from array of topic's subscribers
+		if len(h.topics[topic]) == 0 {
+			// topic had 1 last subscriber
+			h.log.Println("[DEBUG] topic has no more connections, deleting from hub.")
+			delete(h.topics, topic)
+		}
+	}
+
+	// reset this connection's topics
+	c.Topics = make([]string, 0)
+
 }
 
 func (h *Hub) checkOrigin(r *http.Request) bool {
@@ -251,7 +292,7 @@ func (h *Hub) checkOrigin(r *http.Request) bool {
 }
 
 // Notifies the topic with a message
-func (h *Hub) Publish(m *MailMessage) {
+func (h *Hub) Publish(m MailMessage) {
 	// notify each subscriber of a topic
 	if len(m.Topic) > 0 {
 		h.Mailbox <- m

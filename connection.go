@@ -24,17 +24,12 @@ type Subscription struct {
 	connection *connection
 }
 
-type subscriber struct {
-	AuthID      string
-	connections map[*connection]bool
-	topics      map[string]bool
-}
-
 type connection struct {
 	ws     *websocket.Conn
 	send   chan []byte
 	hub    *Hub
 	closed bool
+	Topics []string
 }
 
 func (c *connection) close() {
@@ -82,48 +77,28 @@ func (c *connection) listenRead() {
 			)
 			continue
 		}
+
 		if message.Action == "subscribe" {
+			c.hub.doUnsubscribeTopics(c)
 			// get the message embedded data
-			connData := ConnMessage{}
-			json.Unmarshal([]byte(message.Message), &connData)
-			// message contains the username as Auth0ID
-			// create the subscriptions
-			s := &Subscription{
-				AuthID:     connData.AuthID,
-				Topic:      "BENotification",
-				connection: c,
+			msgMap := message.Message.(map[string]interface{})
+			topicsArr := make([]string, len(msgMap["topics"].([]interface{})))
+			for idx, topic := range msgMap["topics"].([]interface{}) {
+				topicsArr[idx] = topic.(string)
 			}
-			c.hub.subscribe <- s
-			s = &Subscription{
-				AuthID:     connData.AuthID,
-				Topic:      "FLNotification",
-				connection: c,
-			}
-			c.hub.subscribe <- s
-			s = &Subscription{
-				AuthID:     connData.AuthID,
-				Topic:      "ECNotification",
-				connection: c,
-			}
-			c.hub.subscribe <- s
-			s = &Subscription{
-				AuthID:     connData.AuthID,
-				Topic:      "chat",
-				connection: c,
-			}
-			c.hub.subscribe <- s
-			// defined in notification API
-			c.hub.InitSubscriberDataFunc(&connData)
-		} else if message.Action == "publish" {
-			if message.Topic == "chat" {
-				if message.SubTopic == "DELETE_MESSAGE" {
-					c.hub.LCDeleteMessageFunc(message)
-				} else {
-					c.hub.LCMessageFunc(message)
+
+			c.Topics = make([]string, 0)
+
+			for _, topic := range topicsArr {
+				s := &Subscription{
+					AuthID:     msgMap["AuthID"].(string),
+					Topic:      topic,
+					connection: c,
 				}
-			} else {
-				c.hub.Publish(message)
+				c.hub.subscribe <- s
 			}
+			// defined in notification API
+			c.hub.InitSubscriberDataFunc(msgMap)
 		}
 	}
 }
