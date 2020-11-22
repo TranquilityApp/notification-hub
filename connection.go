@@ -4,40 +4,79 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
 
 var (
-	// Time allowed to write a message to the peer.
+	// WriteWait is the time allowed to write a message to the peer.
 	WriteWait = 10 * time.Second
-	// Time allowed to read the next pong message from the peer.
+	// PongWait is the time allowed to read the next pong message from the peer.
 	PongWait = 20 * time.Second
-	// Send pings to peer with this period. Must be less than pongWait.
+	// PingPeriod send pings to peer with this period. Must be less than pongWait.
 	PingPeriod = (PongWait * 9) / 10
-	// Maximum message size allowed from peer.
+	// MaxMessageSize is the maximum message size allowed from peer.
 	MaxMessageSize int64 = 64 * 1024
 )
 
-// Subscription is the subscription for the
-// user that has connected.
-type Subscription struct {
-	UserID     string
-	Topic      string
-	connection *connection
-}
-
-// connection represents a single connection
-// from a client.
-type connection struct {
+// Client represents a single connection from a user.
+type Client struct {
+	ID     string
 	ws     *websocket.Conn
-	send   chan []byte
 	hub    *Hub
 	closed bool
+	send   chan []byte
 	Topics []string
 }
 
+// NewClient creates a new client.
+func NewClient(ws *websocket.Conn, h *Hub) *Client {
+	return &Client{
+		ID:   uuid.New().String(),
+		send: make(chan []byte, 256),
+		ws:   ws,
+		hub:  h,
+	}
+}
+
+// AddTopic adds a topic to a client.
+func (c *Client) AddTopic(topic string) {
+	c.Topics = append(c.Topics, topic)
+}
+
+// Subscription represents a 1:1 relationship between topic and client.
+type Subscription struct {
+	Topic  string
+	Client *Client
+}
+
+// Subscribe subscribes a client to a topic.
+func (c *Client) Subscribe(topic string) {
+	s := &Subscription{
+		Topic:  topic,
+		Client: c,
+	}
+	c.hub.subscribe <- s
+}
+
+// Unsubscribe will end the subscription from the topic.
+func (c *Client) Unsubscribe(topic string) {
+	idx := -1
+	for i := 0; i < len(c.Topics); i++ {
+		if c.Topics[i] == topic {
+			idx = i
+			break
+		}
+	}
+
+	if idx != -1 {
+		// found
+		c.Topics = append(c.Topics[:idx], c.Topics[idx+1:]...)
+	}
+}
+
 // close closes the connection's websocket.
-func (c *connection) close() {
+func (c *Client) close() {
 	if !c.closed {
 		if err := c.ws.Close(); err != nil {
 			c.hub.log.Println("[DEBUG] websocket was already closed:", err)
@@ -56,7 +95,7 @@ func (c *connection) close() {
 // This function also determines the max message size, is the pong handler,
 // and sends to the hub's unregister channel when the function ends, which
 // occurs when the listener errors (connection closed).
-func (c *connection) listenRead() {
+func (c *Client) listenRead() {
 	// when function completes, unregister this connection
 	// and close it
 	defer func() {
@@ -72,7 +111,7 @@ func (c *connection) listenRead() {
 	})
 	for {
 		// read message from ws sent by client
-		_, wsMessage, err := c.ws.ReadMessage()
+		_, payload, err := c.ws.ReadMessage()
 		if err != nil {
 			c.hub.log.Println("[DEBUG] read message error. Client probably closed connection:", err)
 			break
@@ -80,7 +119,7 @@ func (c *connection) listenRead() {
 
 		message := &MailMessage{}
 		// message contains the topic to which user is subscribing to
-		if err := json.Unmarshal(wsMessage, message); err != nil {
+		if err := json.Unmarshal(payload, message); err != nil {
 			c.hub.log.Printf(
 				"[ERROR] invalid data sent for subscription:%v\n",
 				message,
@@ -88,27 +127,13 @@ func (c *connection) listenRead() {
 			continue
 		}
 
-		if message.Action == "subscribe" {
-			c.hub.doUnsubscribeTopics(c)
-			// get the message embedded data
-			msgMap := message.Message.(map[string]interface{})
-			topicsArr := make([]string, len(msgMap["topics"].([]interface{})))
-			for idx, topic := range msgMap["topics"].([]interface{}) {
-				topicsArr[idx] = topic.(string)
-			}
-
-			c.Topics = make([]string, 0)
-
-			for _, topic := range topicsArr {
-				s := &Subscription{
-					UserID:     msgMap["UserID"].(string),
-					Topic:      topic,
-					connection: c,
-				}
-				c.hub.subscribe <- s
-			}
-			// defined in notification API
-			InitSubscriberData(c.hub.SubscriberInitializer, msgMap)
+		switch action := message.Action; action {
+		case "subscribe":
+			c.Subscribe(message.Topic)
+		case "unsubscribe":
+			c.Unsubscribe(message.Topic)
+		default:
+			c.hub.log.Printf("Message action %v not supported", action)
 		}
 	}
 }
@@ -118,7 +143,7 @@ func (c *connection) listenRead() {
 // to be written over the wire to the websocket client (browser).
 // Messages are received on the connection's send channel after the message
 // is received on the channel, it is written to the websocket.
-func (c *connection) listenWrite() {
+func (c *Client) listenWrite() {
 	// write to connection
 	write := func(mt int, payload []byte) error {
 		if err := c.ws.SetWriteDeadline(time.Now().Add(WriteWait)); err != nil {

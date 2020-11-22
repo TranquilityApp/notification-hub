@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 )
 
-// create Tokenizer interface
+// Tokenizer create Tokenizer interface
 type Tokenizer interface {
 	Tokenize(username string) string
 }
@@ -23,8 +23,8 @@ func (t TokenizerFunc) Tokenize(username string) string {
 
 // HmacSha256Tokenizer is an implementation of Tokenizer
 func HmacSha256Tokenizer(token string) Tokenizer {
-	return TokenizerFunc(func(username) string {
-		hasher := hmac.New(sha256.New, []byte(secret))
+	return TokenizerFunc(func(username string) string {
+		hasher := hmac.New(sha256.New, []byte("SUPER_SECRET"))
 		hasher.Write([]byte(username))
 		return hex.EncodeToString(hasher.Sum(nil))
 	})

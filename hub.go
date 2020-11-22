@@ -3,26 +3,15 @@ package hub
 import (
 	"encoding/json"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
-	"strings"
 	"sync"
 
-	"github.com/gorilla/websocket"
+	"github.com/truescotian/pubsub/internal/pkg/websocket"
 )
 
-type SubscriberInitializer interface {
-	InitSubscriberData(connMap map[string]interface{})
-}
-
-var (
-	ReadBufferSize  int = 1024
-	WriteBufferSize int = 1024
-)
-
+// Application is the main app structure
 type Application struct {
 	Hub
 }
@@ -40,52 +29,33 @@ func NewApp() *Application {
 // and logger. Channels are used to handle subscriptions, registering,
 // and unregistering.
 type Hub struct {
-	sync.Mutex                                // protects connections
-	connections map[*connection]*Subscription // simple to close or remove connections
-	topics      map[string][]*connection      // key is topic, value is subscribers
+	sync.Mutex                      // protects connections
+	clients    map[string]*Client   // hub list of clients. Client ID is key
+	topics     map[string][]*Client // key is topic, value is Clients
 
 	log            *log.Logger
 	allowedOrigins []string
-	wsConnFactory  websocket.Upgrader // websocket connection upgrader
-	register       chan *connection   // register new connection on this channel
-	unregister     chan *connection   // unregister connection channel
+	register       chan *Client       // register new Client
+	unregister     chan *Client       // unregister Client
 	subscribe      chan *Subscription // subscribe as user
 
-	Mailbox               chan MailMessage      // fan out message to subscriber
-	SubscriberInitializer SubscriberInitializer // defined in API to setup intial data
+	Mailbox chan MailMessage // fan out message to subscriber
 }
 
-// InitSubscriberData is used to call the implementation of delegate
-// SubscriberInitializer.
-func InitSubscriberData(s SubscriberInitializer, msgMap map[string]interface{}) {
-	s.InitSubscriberData(msgMap)
-}
-
-// Instantiates the Hub.
+// NewHub Instantiates the Hub.
 // Adds the factory design pattern as a websocket HTTP connection upgrader.
 // Creates the application's logger
 func NewHub(logOutput io.Writer, origins ...string) *Hub {
 	h := &Hub{
 		allowedOrigins: origins,
-		register:       make(chan *connection),
-		unregister:     make(chan *connection),
-		connections:    make(map[*connection]*Subscription),
+		register:       make(chan *Client),
+		unregister:     make(chan *Client),
+		clients:        make(map[string]*Client),
 		subscribe:      make(chan *Subscription),
 		Mailbox:        make(chan MailMessage),
-		topics:         make(map[string][]*connection),
+		topics:         make(map[string][]*Client),
 	}
 
-	factory := websocket.Upgrader{
-		ReadBufferSize:  ReadBufferSize,
-		WriteBufferSize: WriteBufferSize,
-		CheckOrigin:     h.checkOrigin,
-	}
-
-	h.wsConnFactory = factory
-
-	if nil == logOutput {
-		logOutput = ioutil.Discard
-	}
 	h.log = log.New(leveledLogWriter(logOutput), "", log.LstdFlags)
 
 	return h
@@ -106,34 +76,36 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// upgrade the connection
-	ws, err := h.wsConnFactory.Upgrade(w, r, nil)
+	ws, err := websocket.Upgrade(w, r, h.allowedOrigins)
 	if err != nil {
 		h.log.Println("[ERROR] failed to upgrade connection:", err)
 		return
 	}
 
-	// create the connection
-	c := &connection{send: make(chan []byte, 256), ws: ws, hub: h}
-	// registers the connection to the hub by prepping the hub for the connection
-	// by setting it to nil
+	c := NewClient(ws, h)
+
 	h.register <- c
 
 	go c.listenWrite()
 	c.listenRead()
 }
 
-// Connections gets the count of hub's connections.
-func (h *Hub) Connections() int {
+func (h *Hub) addClient(c *Client) {
+	h.clients[c.ID] = c
+}
+
+// Clients gets the count of hub's connections.
+func (h *Hub) Clients() int {
 	h.Lock()
 	defer h.Unlock()
-	return len(h.connections)
+	return len(h.clients)
 }
 
 // doRegister prepares the Hub for the connection
-func (h *Hub) doRegister(c *connection) {
+func (h *Hub) doRegister(c *Client) {
 	h.Lock()
 	defer h.Unlock()
-	h.connections[c] = nil
+	h.addClient(c)
 }
 
 // doMailbox sends message m to all of the channels of the topic's connections.
@@ -167,32 +139,26 @@ func (h *Hub) doSubscribe(s *Subscription) {
 	h.Lock()
 	defer h.Unlock()
 
-	s.connection.Topics = append(s.connection.Topics, s.Topic)
-
-	// initalize the topic's slice of connection pointers if
-	// the topic doesn't exist in the hub yet.
+	// initialize topic if it doesn't exist yet.
 	if _, ok := h.topics[s.Topic]; !ok {
-		h.topics[s.Topic] = make([]*connection, 0)
+		h.topics[s.Topic] = make([]*Client, 0)
 	}
 
-	// add connection to the hub topic's connections.
-	h.topics[s.Topic] = append(h.topics[s.Topic], s.connection) // only add topic to hub if it isn't already there
+	s.Client.AddTopic(s.Topic)
 
-	// set the connection's subscriber
-	h.connections[s.connection] = s
-
-	h.log.Printf("[DEBUG] subscribed as %s to topic %s\n", s.AuthID, s.Topic)
+	// add Client to the hub topic's Clients.
+	h.topics[s.Topic] = append(h.topics[s.Topic], s.Client)
 }
 
 // doUnregister unregisters a connection from the hub.
-func (h *Hub) doUnregister(c *connection) {
+func (h *Hub) doUnregister(c *Client) {
 	h.Lock()
 	defer h.Unlock()
 
 	h.log.Println("[DEBUG] Unregistering connection.")
 
 	// get the subscriber
-	_, ok := h.connections[c]
+	_, ok := h.clients[c.ID]
 	if !ok {
 		h.log.Println("[WARN] cannot unregister connection, it is not registered.")
 		return
@@ -200,13 +166,12 @@ func (h *Hub) doUnregister(c *connection) {
 
 	h.tidyTopics(c)
 	c.close()
-	delete(h.connections, c)
+	delete(h.clients, c.ID)
 }
 
-// tidyTopics removes the connection from the topic in the hub.
-// and removes the topic from the hub if that topic has no more
-// connections.
-func (h *Hub) tidyTopics(c *connection) {
+// cleanHub removes the client from topics in the hub. If the topic has no more clients,
+// then the topic is removed from the hub.
+func (h *Hub) tidyTopics(c *Client) {
 	h.log.Println("[DEBUG] cleaning up topics")
 	// remove each connection from the hub's topic connections
 	for i := 0; i < len(c.Topics); i++ {
@@ -230,61 +195,12 @@ func (h *Hub) tidyTopics(c *connection) {
 	// check if the topic needs to be deleted from the hub by cycling through this subscriber's
 	// topics.
 	for _, topic := range c.Topics {
-		// delete from array of topic's subscribers
+		// if topic has no more clients, then remove it
 		if len(h.topics[topic]) == 0 {
-			// topic had 1 last subscriber
-			h.log.Println("[DEBUG] topic has no more connections, deleting from hub.")
+			h.log.Println("[DEBUG] topic has no more clients, deleting from hub.")
 			delete(h.topics, topic)
 		}
 	}
-}
-
-// doUnsubscribeTopics unsubscribes all topics from a connection.
-func (h *Hub) doUnsubscribeTopics(c *connection) {
-	h.Lock()
-	defer h.Unlock()
-
-	_, ok := h.connections[c]
-	if !ok {
-		h.log.Println("[WARN] cannot unsubscribe from topics, connection is not registered.")
-		return
-	}
-
-	h.tidyTopics(c)
-
-	// reset this connection's topics
-	c.Topics = make([]string, 0)
-}
-
-// checkOrigin check's and validates the request's Origin header.
-func (h *Hub) checkOrigin(r *http.Request) bool {
-	origin := r.Header["Origin"]
-	if len(origin) == 0 {
-		return true
-	}
-	u, err := url.Parse(origin[0])
-	if err != nil {
-		return false
-	}
-	var allow bool
-	for _, o := range h.allowedOrigins {
-		if o == u.Host {
-			allow = true
-			break
-		}
-		if o == "*" {
-			allow = true
-			break
-		}
-	}
-	if !allow {
-		h.log.Printf(
-			"[DEBUG] none of allowed origins: %s matched: %s\n",
-			strings.Join(h.allowedOrigins, ", "),
-			u.Host,
-		)
-	}
-	return allow
 }
 
 // Publish sends Mailmessage m to the hub's Mailbox.
