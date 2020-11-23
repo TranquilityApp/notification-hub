@@ -19,6 +19,12 @@ var (
 	MaxMessageSize int64 = 64 * 1024
 )
 
+// Subscription represents a 1:1 relationship between topic and client.
+type Subscription struct {
+	Topic  string
+	Client *Client
+}
+
 // Client represents a single connection from a user.
 type Client struct {
 	ID     string
@@ -44,12 +50,6 @@ func (c *Client) AddTopic(topic string) {
 	c.Topics = append(c.Topics, topic)
 }
 
-// Subscription represents a 1:1 relationship between topic and client.
-type Subscription struct {
-	Topic  string
-	Client *Client
-}
-
 // Subscribe subscribes a client to a topic.
 func (c *Client) Subscribe(topic string) {
 	s := &Subscription{
@@ -57,6 +57,12 @@ func (c *Client) Subscribe(topic string) {
 		Client: c,
 	}
 	c.hub.subscribe <- s
+}
+
+func (c *Client) SubscribeMultiple(topics []string) {
+	for _, topic := range topics {
+		c.Subscribe(topic)
+	}
 }
 
 // Unsubscribe will end the subscription from the topic.
@@ -70,9 +76,9 @@ func (c *Client) Unsubscribe(topic string) {
 	}
 
 	if idx != -1 {
-		// found
 		c.Topics = append(c.Topics[:idx], c.Topics[idx+1:]...)
 	}
+	c.hub.log.Printf("[INFO] Client %s unsubscribed from topic %s", c.ID, topic)
 }
 
 // close closes the connection's websocket.
@@ -117,7 +123,7 @@ func (c *Client) listenRead() {
 			break
 		}
 
-		message := &MailMessage{}
+		message := &Message{}
 		// message contains the topic to which user is subscribing to
 		if err := json.Unmarshal(payload, message); err != nil {
 			c.hub.log.Printf(
@@ -130,6 +136,16 @@ func (c *Client) listenRead() {
 		switch action := message.Action; action {
 		case "subscribe":
 			c.Subscribe(message.Topic)
+		case "subscribe-multiple":
+			subMsg := &SubscriptionsMessage{}
+			if err := json.Unmarshal(payload, subMsg); err != nil {
+				c.hub.log.Printf(
+					"[ERROR] invalid data sent for subscription:%v\n",
+					message,
+				)
+				continue
+			}
+			c.SubscribeMultiple(subMsg.Topics)
 		case "unsubscribe":
 			c.Unsubscribe(message.Topic)
 		default:

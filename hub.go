@@ -1,14 +1,14 @@
 package hub
 
 import (
+	"github.com/truescotian/pubsub/internal/pkg/websocket"
+
 	"encoding/json"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"sync"
-
-	"github.com/truescotian/pubsub/internal/pkg/websocket"
 )
 
 // Application is the main app structure
@@ -39,7 +39,7 @@ type Hub struct {
 	unregister     chan *Client       // unregister Client
 	subscribe      chan *Subscription // subscribe as user
 
-	Mailbox chan MailMessage // fan out message to subscriber
+	Mailbox chan Message // fan out message to subscriber
 }
 
 // NewHub Instantiates the Hub.
@@ -52,7 +52,7 @@ func NewHub(logOutput io.Writer, origins ...string) *Hub {
 		unregister:     make(chan *Client),
 		clients:        make(map[string]*Client),
 		subscribe:      make(chan *Subscription),
-		Mailbox:        make(chan MailMessage),
+		Mailbox:        make(chan Message),
 		topics:         make(map[string][]*Client),
 	}
 
@@ -90,6 +90,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c.listenRead()
 }
 
+// addClient adds a client to the hub using its ID as the key.
 func (h *Hub) addClient(c *Client) {
 	h.clients[c.ID] = c
 }
@@ -108,32 +109,6 @@ func (h *Hub) doRegister(c *Client) {
 	h.addClient(c)
 }
 
-// doMailbox sends message m to all of the channels of the topic's connections.
-func (h *Hub) doMailbox(m MailMessage) {
-	defer h.Unlock()
-
-	h.Lock()
-
-	// get all connections (subscribers) of a topic.
-	connections, ok := h.topics[m.Topic]
-	if !ok {
-		h.log.Println("[DEBUG] there are no subscriptions from:", m.Topic)
-		return
-	}
-
-	// encode message.
-	bytes, err := json.Marshal(m)
-	if err != nil {
-		h.log.Println("[ERROR] Unable to marshal message")
-	}
-
-	h.log.Println("[DEBUG] sending message to topic: ", m.Topic)
-	h.log.Println("[DEBUG] topic connection count:", len(connections))
-	for _, c := range connections {
-		c.send <- bytes
-	}
-}
-
 // doSubscribe adds the topic to the connection's slice of topics.
 func (h *Hub) doSubscribe(s *Subscription) {
 	h.Lock()
@@ -148,6 +123,8 @@ func (h *Hub) doSubscribe(s *Subscription) {
 
 	// add Client to the hub topic's Clients.
 	h.topics[s.Topic] = append(h.topics[s.Topic], s.Client)
+
+	h.log.Printf("[DEBUG] Client %s subscribed to topic %s", s.Client.ID, s.Topic)
 }
 
 // doUnregister unregisters a connection from the hub.
@@ -164,23 +141,23 @@ func (h *Hub) doUnregister(c *Client) {
 		return
 	}
 
-	h.tidyTopics(c)
+	h.cleanup(c)
 	c.close()
 	delete(h.clients, c.ID)
 }
 
 // cleanHub removes the client from topics in the hub. If the topic has no more clients,
 // then the topic is removed from the hub.
-func (h *Hub) tidyTopics(c *Client) {
+func (h *Hub) cleanup(c *Client) {
 	h.log.Println("[DEBUG] cleaning up topics")
 	// remove each connection from the hub's topic connections
 	for i := 0; i < len(c.Topics); i++ {
 		// remove connection from topics
-		conns := h.topics[c.Topics[i]]
+		clients := h.topics[c.Topics[i]]
 		foundIdx := -1
 		// find the index of this connection in the list of connections that are subscribed to this topic
-		for idx, conn := range conns {
-			if conn == c {
+		for idx, client := range clients {
+			if client == c {
 				foundIdx = idx
 				break
 			}
@@ -188,7 +165,8 @@ func (h *Hub) tidyTopics(c *Client) {
 
 		// use the found index to remove this connection from the topic's connections
 		if foundIdx != -1 {
-			h.topics[c.Topics[i]] = append(conns[:foundIdx], conns[foundIdx+1:]...)
+			h.log.Println("[DEBUG] removing client %v from hub's topic %v", c.ID, c.Topics[i])
+			h.topics[c.Topics[i]] = append(clients[:foundIdx], clients[foundIdx+1:]...)
 		}
 	}
 
@@ -203,8 +181,33 @@ func (h *Hub) tidyTopics(c *Client) {
 	}
 }
 
+// doMailbox sends message m to all of the channels of the topic's connections.
+func (h *Hub) doMailbox(m Message) {
+	defer h.Unlock()
+
+	h.Lock()
+
+	// get all connections (subscribers) of a topic.
+	clients, ok := h.topics[m.Topic]
+	if !ok {
+		h.log.Println("[DEBUG] there are no subscriptions from:", m.Topic)
+		return
+	}
+
+	// encode message.
+	bytes, err := json.Marshal(m)
+	if err != nil {
+		h.log.Println("[ERROR] Unable to marshal message")
+	}
+
+	h.log.Printf("[DEBUG] Sending message to topic %v. Connection count %d", m.Topic, len(clients))
+	for _, c := range clients {
+		c.send <- bytes
+	}
+}
+
 // Publish sends Mailmessage m to the hub's Mailbox.
-func (h *Hub) Publish(m MailMessage) {
+func (h *Hub) Publish(m Message) {
 	// notify each subscriber of a topic
 	if len(m.Topic) > 0 {
 		h.Mailbox <- m

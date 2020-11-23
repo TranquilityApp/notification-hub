@@ -1,8 +1,11 @@
 package hub
 
-// MailMessage is the message from the network
-type MailMessage struct {
-	Action  string      `json:"action"`
-	Topic   string      `json:"topic"`
-	Message interface{} `json:"message"`
+// Message is the message from the network
+type Message struct {
+	Action string `json:"action"`
+	Topic  string `json:"topic"`
+}
+
+type SubscriptionsMessage struct {
+	Topics []string `json:"topics"`
 }
