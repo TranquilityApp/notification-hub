@@ -10,13 +10,16 @@ import (
 
 var (
 	// WriteWait is the time allowed to write a message to the peer.
-	WriteWait = 10 * time.Second
+	writeWait = 10 * time.Second
+
 	// PongWait is the time allowed to read the next pong message from the peer.
-	PongWait = 20 * time.Second
+	pongWait = 30 * time.Second
+
 	// PingPeriod send pings to peer with this period. Must be less than pongWait.
-	PingPeriod = (PongWait * 9) / 10
+	pingPeriod = (pongWait * 9) / 10
+
 	// MaxMessageSize is the maximum message size allowed from peer.
-	MaxMessageSize int64 = 64 * 1024
+	maxMessageSize int64 = 512
 )
 
 // Subscription represents a 1:1 relationship between topic and client.
@@ -59,29 +62,14 @@ func (c *Client) Subscribe(topic string) {
 	c.hub.subscribe <- s
 }
 
+// SubscribeMultiple subscribes the client to multiple topics.
 func (c *Client) SubscribeMultiple(topics []string) {
 	for _, topic := range topics {
 		c.Subscribe(topic)
 	}
 }
 
-// Unsubscribe will end the subscription from the topic.
-func (c *Client) Unsubscribe(topic string) {
-	idx := -1
-	for i := 0; i < len(c.Topics); i++ {
-		if c.Topics[i] == topic {
-			idx = i
-			break
-		}
-	}
-
-	if idx != -1 {
-		c.Topics = append(c.Topics[:idx], c.Topics[idx+1:]...)
-	}
-	c.hub.log.Printf("[INFO] Client %s unsubscribed from topic %s", c.ID, topic)
-}
-
-// close closes the connection's websocket.
+// close closes the websocket and the send channel.
 func (c *Client) close() {
 	if !c.closed {
 		if err := c.ws.Close(); err != nil {
@@ -95,12 +83,7 @@ func (c *Client) close() {
 	}
 }
 
-// listenRead is the websocket listener and handles receiving messages along the wire
-// from the client. Different actions can be described within the message to determine
-// the next action to take.
-// This function also determines the max message size, is the pong handler,
-// and sends to the hub's unregister channel when the function ends, which
-// occurs when the listener errors (connection closed).
+// listenRead pumps messages from the websocket connection to the hub.
 func (c *Client) listenRead() {
 	// when function completes, unregister this connection
 	// and close it
@@ -108,70 +91,67 @@ func (c *Client) listenRead() {
 		c.hub.log.Println("[DEBUG] Calling unregister from listenRead")
 		c.hub.unregister <- c
 	}()
-	c.ws.SetReadLimit(MaxMessageSize)
-	if err := c.ws.SetReadDeadline(time.Now().Add(PongWait)); err != nil {
+	c.ws.SetReadLimit(maxMessageSize)
+	if err := c.ws.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
 		c.hub.log.Println("[ERROR] failed to set socket read deadline:", err)
 	}
 	c.ws.SetPongHandler(func(string) error {
-		return c.ws.SetReadDeadline(time.Now().Add(PongWait))
+		return c.ws.SetReadDeadline(time.Now().Add(pongWait))
 	})
 	for {
 		// read message from ws sent by client
 		_, payload, err := c.ws.ReadMessage()
 		if err != nil {
-			c.hub.log.Println("[DEBUG] read message error. Client probably closed connection:", err)
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				c.hub.log.Println("[DEBUG] read message error. Client probably closed connection:", err)
+			} else {
+				c.hub.log.Println("[DEBUG] Unexpected error: %v", err)
+			}
 			break
 		}
 
-		message := &Message{}
+		actionMessage := &ActionMessage{}
 		// message contains the topic to which user is subscribing to
-		if err := json.Unmarshal(payload, message); err != nil {
+		if err := json.Unmarshal(payload, actionMessage); err != nil {
 			c.hub.log.Printf(
 				"[ERROR] invalid data sent for subscription:%v\n",
-				message,
+				actionMessage,
 			)
 			continue
 		}
 
-		switch action := message.Action; action {
+		switch action := actionMessage.Action; action {
 		case "subscribe":
-			c.Subscribe(message.Topic)
-		case "subscribe-multiple":
 			subMsg := &SubscriptionsMessage{}
 			if err := json.Unmarshal(payload, subMsg); err != nil {
 				c.hub.log.Printf(
 					"[ERROR] invalid data sent for subscription:%v\n",
-					message,
+					actionMessage,
 				)
 				continue
 			}
 			c.SubscribeMultiple(subMsg.Topics)
-		case "unsubscribe":
-			c.Unsubscribe(message.Topic)
 		default:
 			c.hub.log.Printf("Message action %v not supported", action)
 		}
 	}
 }
 
-// listenWrite is the websocket writer and handles the write deadlines,
-// ping tick iterval, and listens on the connection's send channel for messages
-// to be written over the wire to the websocket client (browser).
-// Messages are received on the connection's send channel after the message
-// is received on the channel, it is written to the websocket.
+// listenWrite pumps messages from the hub to the websocket connection.
 func (c *Client) listenWrite() {
 	// write to connection
+	ticker := time.NewTicker(pingPeriod)
 	write := func(mt int, payload []byte) error {
-		if err := c.ws.SetWriteDeadline(time.Now().Add(WriteWait)); err != nil {
+		if err := c.ws.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
 			return err
 		}
 		return c.ws.WriteMessage(mt, payload)
 	}
-	ticker := time.NewTicker(PingPeriod)
 
 	// when function ends, close connection
 	defer func() {
 		ticker.Stop()
+		c.ws.Close()
 	}()
 
 	for {
@@ -192,7 +172,7 @@ func (c *Client) listenWrite() {
 				return
 			}
 		case <-ticker.C: // ping pong ws connection
-			if err := write(websocket.PingMessage, []byte{'p', 'i', 'n', 'g'}); err != nil {
+			if err := write(websocket.PingMessage, []byte{}); err != nil {
 				c.hub.log.Println("[ERROR] failed to ping socket:", err)
 				return
 			}

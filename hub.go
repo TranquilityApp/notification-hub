@@ -3,7 +3,6 @@ package hub
 import (
 	"github.com/truescotian/pubsub/internal/pkg/websocket"
 
-	"encoding/json"
 	"io"
 	"log"
 	"net/http"
@@ -24,22 +23,36 @@ func NewApp() *Application {
 	return app
 }
 
-// Hub is the backbone of the broker. This function contains thread-safe
-// connection management by containing the connections, topics,
-// and logger. Channels are used to handle subscriptions, registering,
-// and unregistering.
+// Hub contains the active clients with thread-safe connection management,
+// handles subscriptions and broadcasts messages to the clients.
 type Hub struct {
-	sync.Mutex                      // protects connections
-	clients    map[string]*Client   // hub list of clients. Client ID is key
-	topics     map[string][]*Client // key is topic, value is Clients
 
-	log            *log.Logger
+	// protects connections
+	sync.Mutex
+
+	// registered clients
+	clients map[*Client]bool
+
+	// topics with its subscribers (clients)
+	topics map[string][]*Client
+
+	// logger
+	log *log.Logger
+
+	// allowed origins for http requests.
 	allowedOrigins []string
-	register       chan *Client       // register new Client
-	unregister     chan *Client       // unregister Client
-	subscribe      chan *Subscription // subscribe as user
 
-	Mailbox chan Message // fan out message to subscriber
+	// register requests from clients.
+	register chan *Client
+
+	// unregister requests from clients.
+	unregister chan *Client
+
+	// subscribe requests
+	subscribe chan *Subscription
+
+	// emit messages from publisher
+	emit chan PublishMessage
 }
 
 // NewHub Instantiates the Hub.
@@ -50,9 +63,9 @@ func NewHub(logOutput io.Writer, origins ...string) *Hub {
 		allowedOrigins: origins,
 		register:       make(chan *Client),
 		unregister:     make(chan *Client),
-		clients:        make(map[string]*Client),
+		clients:        make(map[*Client]bool),
 		subscribe:      make(chan *Subscription),
-		Mailbox:        make(chan Message),
+		emit:           make(chan PublishMessage),
 		topics:         make(map[string][]*Client),
 	}
 
@@ -82,31 +95,19 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	c := NewClient(ws, h)
+	client := NewClient(ws, h)
 
-	h.register <- c
+	h.register <- client
 
-	go c.listenWrite()
-	c.listenRead()
-}
-
-// addClient adds a client to the hub using its ID as the key.
-func (h *Hub) addClient(c *Client) {
-	h.clients[c.ID] = c
-}
-
-// Clients gets the count of hub's connections.
-func (h *Hub) Clients() int {
-	h.Lock()
-	defer h.Unlock()
-	return len(h.clients)
+	go client.listenWrite()
+	client.listenRead()
 }
 
 // doRegister prepares the Hub for the connection
-func (h *Hub) doRegister(c *Client) {
+func (h *Hub) doRegister(client *Client) {
 	h.Lock()
 	defer h.Unlock()
-	h.addClient(c)
+	h.clients[client] = true
 }
 
 // doSubscribe adds the topic to the connection's slice of topics.
@@ -135,27 +136,26 @@ func (h *Hub) doUnregister(c *Client) {
 	h.log.Println("[DEBUG] Unregistering connection.")
 
 	// get the subscriber
-	_, ok := h.clients[c.ID]
+	_, ok := h.clients[c]
 	if !ok {
 		h.log.Println("[WARN] cannot unregister connection, it is not registered.")
 		return
 	}
 
-	h.cleanup(c)
+	h.deleteTopic(c)
 	c.close()
-	delete(h.clients, c.ID)
+	delete(h.clients, c)
 }
 
-// cleanHub removes the client from topics in the hub. If the topic has no more clients,
+// deleteTopic removes the client from topics in the hub. If the topic has no more clients,
 // then the topic is removed from the hub.
-func (h *Hub) cleanup(c *Client) {
-	h.log.Println("[DEBUG] cleaning up topics")
+func (h *Hub) deleteTopic(c *Client) {
 	// remove each connection from the hub's topic connections
 	for i := 0; i < len(c.Topics); i++ {
-		// remove connection from topics
 		clients := h.topics[c.Topics[i]]
 		foundIdx := -1
-		// find the index of this connection in the list of connections that are subscribed to this topic
+
+		// find the index of the client in the list of clients subscribed to this topic
 		for idx, client := range clients {
 			if client == c {
 				foundIdx = idx
@@ -181,36 +181,31 @@ func (h *Hub) cleanup(c *Client) {
 	}
 }
 
-// doMailbox sends message m to all of the channels of the topic's connections.
-func (h *Hub) doMailbox(m Message) {
+// doEmit sends message m to all of the channels of the topic's connections.
+func (h *Hub) doEmit(m PublishMessage) {
 	defer h.Unlock()
 
 	h.Lock()
 
-	// get all connections (subscribers) of a topic.
+	// get topic subscribers
 	clients, ok := h.topics[m.Topic]
 	if !ok {
 		h.log.Println("[DEBUG] there are no subscriptions from:", m.Topic)
 		return
 	}
 
-	// encode message.
-	bytes, err := json.Marshal(m)
-	if err != nil {
-		h.log.Println("[ERROR] Unable to marshal message")
-	}
-
 	h.log.Printf("[DEBUG] Sending message to topic %v. Connection count %d", m.Topic, len(clients))
 	for _, c := range clients {
-		c.send <- bytes
+		c.send <- m.Payload
 	}
+
 }
 
-// Publish sends Mailmessage m to the hub's Mailbox.
-func (h *Hub) Publish(m Message) {
+// Publish sends Mailmessage m to the hub's emitter.
+func (h *Hub) Publish(m PublishMessage) {
 	// notify each subscriber of a topic
 	if len(m.Topic) > 0 {
-		h.Mailbox <- m
+		h.emit <- m
 	}
 	return
 }
@@ -223,8 +218,8 @@ func (h *Hub) Run() {
 			h.doRegister(c)
 		case c := <-h.unregister: // Unregisteres user from hub
 			h.doUnregister(c)
-		case m := <-h.Mailbox: // Sends message to a mailbox
-			h.doMailbox(m)
+		case m := <-h.emit: // Sends message to a mailbox
+			h.doEmit(m)
 		case s := <-h.subscribe: // Subscribes a user to the hub
 			h.doSubscribe(s)
 		}
