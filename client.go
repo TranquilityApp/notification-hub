@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
 
@@ -39,9 +38,9 @@ type Client struct {
 }
 
 // NewClient creates a new client.
-func NewClient(ws *websocket.Conn, h *Hub) *Client {
+func NewClient(ws *websocket.Conn, h *Hub, ID string) *Client {
 	return &Client{
-		ID:   uuid.New().String(),
+		ID:   ID,
 		send: make(chan []byte, 256),
 		ws:   ws,
 		hub:  h,

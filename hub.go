@@ -1,12 +1,14 @@
 package hub
 
 import (
+	"github.com/TranquilityApp/middleware"
 	"github.com/truescotian/pubsub/internal/pkg/websocket"
 
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 )
 
@@ -53,6 +55,8 @@ type Hub struct {
 
 	// emit messages from publisher
 	emit chan PublishMessage
+
+	OnSubscribe func(*Subscription)
 }
 
 // NewHub Instantiates the Hub.
@@ -95,7 +99,9 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := NewClient(ws, h)
+	userID := strings.Split(r.Context().Value(middleware.AuthKey).(string), "|")[1]
+
+	client := NewClient(ws, h, userID)
 
 	h.register <- client
 
@@ -126,6 +132,7 @@ func (h *Hub) doSubscribe(s *Subscription) {
 	h.topics[s.Topic] = append(h.topics[s.Topic], s.Client)
 
 	h.log.Printf("[DEBUG] Client %s subscribed to topic %s", s.Client.ID, s.Topic)
+	h.OnSubscribe(s)
 }
 
 // doUnregister unregisters a connection from the hub.
