@@ -131,7 +131,15 @@ func (c *Client) listenRead() {
 			}
 			c.SubscribeMultiple(subMsg.Topics)
 		default:
-			c.hub.log.Printf("Message action %v not supported", action)
+			pubMsg := &PublishMessage{}
+			if err := json.Unmarshal(payload, pubMsg); err != nil {
+				c.hub.log.Printf(
+					"[ERROR] invalid data sent for subscription:%v\n",
+					actionMessage,
+				)
+				continue
+			}
+			c.hub.Publish(*pubMsg)
 		}
 	}
 }
