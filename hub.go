@@ -53,6 +53,9 @@ type Hub struct {
 	// subscribe requests
 	subscribe chan *Subscription
 
+	// subscribe requests
+	unsubscribe chan *Subscription
+
 	// emit messages from publisher
 	emit chan PublishMessage
 
@@ -135,6 +138,25 @@ func (h *Hub) doSubscribe(s *Subscription) {
 	h.OnSubscribe(s)
 }
 
+func (h *Hub) doUnsubscribe(s *Subscription) {
+	h.Lock()
+	defer h.Unlock()
+
+	_, ok := h.clients[s.Client]
+	if !ok {
+		h.log.Println("[WARN] cannot unsubscribe client, it is not registered.")
+		return
+	}
+
+	_, ok = h.topics[s.Topic]
+	if !ok {
+		h.log.Println("[WARN] cannot unsubscribe client, topic not found.")
+		return
+	}
+
+	s.Client.RemoveTopic(s.Topic)
+}
+
 // doUnregister unregisters a connection from the hub.
 func (h *Hub) doUnregister(c *Client) {
 	h.Lock()
@@ -170,7 +192,7 @@ func (h *Hub) deleteTopic(c *Client) {
 			}
 		}
 
-		// use the found index to remove this connection from the topic's connections
+		// use the found index to remove this client from the topic's clients
 		if foundIdx != -1 {
 			h.log.Println("[DEBUG] removing client %v from hub's topic %v", c.ID, c.Topics[i])
 			h.topics[c.Topics[i]] = append(clients[:foundIdx], clients[foundIdx+1:]...)
@@ -229,6 +251,8 @@ func (h *Hub) Run() {
 			h.doEmit(m)
 		case s := <-h.subscribe: // Subscribes a user to the hub
 			h.doSubscribe(s)
+		case s := <-h.unsubscribe: // Unsubscribes a user to a topic
+			h.doUnsubscribe(s)
 		}
 	}
 }

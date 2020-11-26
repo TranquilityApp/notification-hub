@@ -52,6 +52,24 @@ func (c *Client) AddTopic(topic string) {
 	c.Topics = append(c.Topics, topic)
 }
 
+// RemoveTopic removes a topic from a client.
+func (c *Client) RemoveTopic(topic string) {
+	foundIdx := -1
+	// find the index of the client in the list of clients subscribed to this topic
+	for idx, t := range c.Topics {
+		if t == topic {
+			foundIdx = idx
+			break
+		}
+	}
+
+	// use the found index to remove this client from the topic's clients
+	if foundIdx != -1 {
+		c.hub.log.Println("[DEBUG] removing topic %s from client %s", c.Topics[foundIdx], c.ID)
+		c.Topics = append(c.Topics[:foundIdx], c.Topics[foundIdx+1:]...)
+	}
+}
+
 // Subscribe subscribes a client to a topic.
 func (c *Client) Subscribe(topic string) {
 	s := &Subscription{
@@ -65,6 +83,20 @@ func (c *Client) Subscribe(topic string) {
 func (c *Client) SubscribeMultiple(topics []string) {
 	for _, topic := range topics {
 		c.Subscribe(topic)
+	}
+}
+
+func (c *Client) Unsubscribe(topic string) {
+	s := &Subscription{
+		Topic:  topic,
+		Client: c,
+	}
+	c.hub.unsubscribe <- s
+}
+
+func (c *Client) UnsubscribeAll() {
+	for _, topic := range c.Topics {
+		c.Unsubscribe(topic)
 	}
 }
 
@@ -121,6 +153,8 @@ func (c *Client) listenRead() {
 
 		switch action := actionMessage.Action; action {
 		case "subscribe":
+			c.hub.log.Printf("[DEBUG] Client %s is subscribing. Removing all old subscriptions.", c.ID)
+			c.UnsubscribeAll()
 			subMsg := &SubscriptionsMessage{}
 			if err := json.Unmarshal(payload, subMsg); err != nil {
 				c.hub.log.Printf(
