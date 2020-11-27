@@ -2,7 +2,6 @@ package hub
 
 import (
 	"github.com/TranquilityApp/middleware"
-	"github.com/truescotian/pubsub/internal/pkg/websocket"
 
 	"io"
 	"log"
@@ -12,14 +11,14 @@ import (
 	"sync"
 )
 
-// Application is the main app structure
-type Application struct {
+// Broker is the application structure
+type Broker struct {
 	Hub
 }
 
-// NewApp is an Application constructor which instantiates the Hub.
-func NewApp() *Application {
-	app := &Application{
+// NewBroker is a Broker constructor which instantiates the Hub.
+func NewBroker() *Broker {
+	app := &Broker{
 		Hub: *NewHub(os.Stdout, "*"),
 	}
 	return app
@@ -53,9 +52,6 @@ type Hub struct {
 	// subscribe requests
 	subscribe chan *Subscription
 
-	// subscribe requests
-	unsubscribe chan *Subscription
-
 	// emit messages from publisher
 	emit chan PublishMessage
 
@@ -64,7 +60,7 @@ type Hub struct {
 
 // NewHub Instantiates the Hub.
 // Adds the factory design pattern as a websocket HTTP connection upgrader.
-// Creates the application's logger
+// Creates the broker's logger
 func NewHub(logOutput io.Writer, origins ...string) *Hub {
 	h := &Hub{
 		allowedOrigins: origins,
@@ -85,21 +81,10 @@ func NewHub(logOutput io.Writer, origins ...string) *Hub {
 // Sets up the connection and registers it to the hub for
 // read/write operations.
 func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// only allow GET request
-	if r.Method != "GET" {
-		http.Error(
-			w,
-			http.StatusText(http.StatusMethodNotAllowed),
-			http.StatusMethodNotAllowed,
-		)
-		return
-	}
 
-	// upgrade the connection
-	ws, err := websocket.Upgrade(w, r, h.allowedOrigins)
+	ws, err := newClientServerWS(w, r, h.allowedOrigins)
 	if err != nil {
-		h.log.Println("[ERROR] failed to upgrade connection:", err)
-		return
+		http.Error(w, err.Error(), http.StatusBadRequest)
 	}
 
 	userID := strings.Split(r.Context().Value(middleware.AuthKey).(string), "|")[1]
@@ -108,8 +93,10 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	h.register <- client
 
-	go client.listenWrite()
-	client.listenRead()
+	ws.SetClient(client)
+
+	go ws.listenWrite()
+	ws.listenRead()
 }
 
 // doRegister prepares the Hub for the connection
@@ -138,25 +125,6 @@ func (h *Hub) doSubscribe(s *Subscription) {
 	h.OnSubscribe(s)
 }
 
-func (h *Hub) doUnsubscribe(s *Subscription) {
-	h.Lock()
-	defer h.Unlock()
-
-	_, ok := h.clients[s.Client]
-	if !ok {
-		h.log.Println("[WARN] cannot unsubscribe client, it is not registered.")
-		return
-	}
-
-	_, ok = h.topics[s.Topic]
-	if !ok {
-		h.log.Println("[WARN] cannot unsubscribe client, topic not found.")
-		return
-	}
-
-	s.Client.RemoveTopic(s.Topic)
-}
-
 // doUnregister unregisters a connection from the hub.
 func (h *Hub) doUnregister(c *Client) {
 	h.Lock()
@@ -171,15 +139,23 @@ func (h *Hub) doUnregister(c *Client) {
 		return
 	}
 
-	h.deleteTopic(c)
+	h.handleRemoveClient(c)
 	c.close()
 	delete(h.clients, c)
 }
 
+// handleRemoveClient handles the removal of deleting a client from the hub.
+// This includes deleting the client from the hub's topics map, and
+// cleaning up the hub's topics map if a topic has no more clients.
+func (h *Hub) handleRemoveClient(c *Client) {
+	h.deleteTopicClient(c)
+	h.handleEmptyTopics(c)
+}
+
 // deleteTopic removes the client from topics in the hub. If the topic has no more clients,
 // then the topic is removed from the hub.
-func (h *Hub) deleteTopic(c *Client) {
-	// remove each connection from the hub's topic connections
+func (h *Hub) deleteTopicClient(c *Client) {
+	// remove each Client from the hub's topic clients
 	for i := 0; i < len(c.Topics); i++ {
 		clients := h.topics[c.Topics[i]]
 		foundIdx := -1
@@ -194,17 +170,18 @@ func (h *Hub) deleteTopic(c *Client) {
 
 		// use the found index to remove this client from the topic's clients
 		if foundIdx != -1 {
-			h.log.Println("[DEBUG] removing client %v from hub's topic %v", c.ID, c.Topics[i])
+			h.log.Printf("[DEBUG] Removing client %s from hub topic %s", c.ID, c.Topics[i])
 			h.topics[c.Topics[i]] = append(clients[:foundIdx], clients[foundIdx+1:]...)
 		}
 	}
+}
 
-	// check if the topic needs to be deleted from the hub by cycling through this subscriber's
-	// topics.
+// handleEmptyTopics handles the deletion of a topic which has no more clients attached.
+func (h *Hub) handleEmptyTopics(c *Client) {
 	for _, topic := range c.Topics {
-		// if topic has no more clients, then remove it
+		// no more clients on topic, remove topic
 		if len(h.topics[topic]) == 0 {
-			h.log.Println("[DEBUG] topic has no more clients, deleting from hub.")
+			h.log.Printf("[DEBUG] topic %s has no more clients, deleting from hub.", topic)
 			delete(h.topics, topic)
 		}
 	}
@@ -223,7 +200,7 @@ func (h *Hub) doEmit(m PublishMessage) {
 		return
 	}
 
-	h.log.Printf("[DEBUG] Sending message to topic %v. Connection count %d", m.Topic, len(clients))
+	h.log.Printf("[DEBUG] Sending message to topic %v. Client count %d", m.Topic, len(clients))
 	for _, c := range clients {
 		c.send <- m.Payload
 	}
@@ -251,8 +228,6 @@ func (h *Hub) Run() {
 			h.doEmit(m)
 		case s := <-h.subscribe: // Subscribes a user to the hub
 			h.doSubscribe(s)
-		case s := <-h.unsubscribe: // Unsubscribes a user to a topic
-			h.doUnsubscribe(s)
 		}
 	}
 }

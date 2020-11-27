@@ -1,16 +1,14 @@
 package hub
 
 import (
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
-
-var upgrader = websocket.Upgrader{}
 
 func serveHTTP(w http.ResponseWriter, r *http.Request) {
 	c, err := upgrader.Upgrade(w, r, nil)
@@ -31,12 +29,75 @@ func serveHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func TestHub_ServeHTTP(t *testing.T) {
-	app := NewApp()
-	s := httptest.NewServer(http.HandlerFunc(app.ServeHTTP))
-	s.Close()
+	t.Run("GET /ws returns 101", func(t *testing.T) {
+		broker := NewBroker()
+
+		server := httptest.NewServer(http.HandlerFunc(broker.ServeHTTP))
+		defer server.Close()
+
+		_ := mustDialWs(t, "ws"+strings.TrimPrefix(server.URL, "http")+"/ws")
+	})
 }
 
-func newConnection(url string, hub *Hub) (c *connection) {
+func TestHub_DoSubscribe(t *testing.T) {
+	t.Run("Start a server with 1 client and subscribe to two topics", func(t *testing.T) {
+		broker := NewBroker()
+		topics := []string{"topic1", "topic2"}
+		server := httptest.NewServer(http.HandlerFunc(broker.ServeHTTP))
+		ws := mustDialWs(t, "ws"+strings.TrimPrefix(server.URL, "http")+"/ws")
+
+		defer server.Close()
+		defer ws.Close()
+
+		writeWSMessage(t, ws, topics[0])
+		writeWSMessage(t, ws, topics[1])
+
+		time.Sleep(10000)
+
+		within(t, 10000, func() {
+			if len(broker.Hub.clients) != 2 {
+				t.Errorf("Got %d clients, want %d", len(broker.Hub.clients), 2)
+			}
+		})
+
+	})
+}
+
+func writeWSMessage(t *testing.T, conn *websocket.Conn, message string) {
+	t.Helper()
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(message)); err != nil {
+		t.Fatalf("Could not send message over ws connection %v", err)
+	}
+}
+
+func mustDialWs(t *testing.T, url string) *websocket.Conn {
+	ws, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		t.Fatalf("could not open a ws connection on %s %v", url, err)
+	}
+
+	return ws
+}
+
+func within(t *testing.T, d time.Duration, assert func()) {
+	t.Helper()
+
+	done := make(chan struct{}, 1)
+
+	go func() {
+		assert()
+		done <- struct{}{}
+	}()
+
+	select {
+	case <-time.After(d):
+		t.Error("timed out")
+	case <-done:
+	}
+}
+
+/*
+func newClient(url string, hub *Hub) (c *connection) {
 	// Convert http://127.0.0.1 to ws://127.0.0.1
 	u := "ws" + strings.TrimPrefix(url, "http")
 
@@ -46,36 +107,42 @@ func newConnection(url string, hub *Hub) (c *connection) {
 		return nil
 	}
 
-	c = &connection{send: make(chan []byte, 256), ws: ws, hub: hub}
+	c = &connec{send: make(chan []byte, 256), ws: ws, hub: hub}
+	client := NewClient(ws, hub, "auth0|FAKE1")
 	return c
 }
-
+*/
+/*
 func TestHub_DoRegister(t *testing.T) {
 	app := NewApp()
 	s := httptest.NewServer(http.HandlerFunc(serveHTTP))
 	defer s.Close()
-	c := newConnection(s.URL, &app.Hub)
+	c := newClient(s.URL, &app.Hub)
 	app.doRegister(c)
-	_, ok := app.Hub.connections[c]
+	_, ok := app.Hub.clients[c]
 	if !ok {
 		t.Fatal()
 	}
-	if len(app.Hub.connections) != 1 {
+	if len(app.Hub.clients) != 1 {
 		t.Fatal()
 	}
 }
-
+*/
+/*
 func TestHub_DoSubscribe(t *testing.T) {
 	app := NewApp()
+
 	s := httptest.NewServer(http.HandlerFunc(serveHTTP))
 	defer s.Close()
-	c := newConnection(s.URL, &app.Hub)
+
+	c := newClient(s.URL, &app.Hub)
 	defer c.ws.Close()
+
 	sub := &Subscription{
-		AuthID:     "auth0|000000",
-		Topic:      "0000000",
-		connection: c,
+		Topic:  "someTopic",
+		Client: c,
 	}
+
 	app.doSubscribe(sub)
 
 	testCases := []struct {
@@ -90,7 +157,7 @@ func TestHub_DoSubscribe(t *testing.T) {
 			Subscription:        sub,
 			LenConnectionTopics: 0,
 			LenHubTopics:        1,
-			LenHubConnections:   1,
+			LenHubClients:       1,
 			ExpectedErrors:      true,
 			Description:         "Invalid LenConnectionTopics",
 		},
@@ -98,7 +165,7 @@ func TestHub_DoSubscribe(t *testing.T) {
 			Subscription:        sub,
 			LenConnectionTopics: 1,
 			LenHubTopics:        1,
-			LenHubConnections:   1,
+			LenHubClients:       1,
 			ExpectedErrors:      false,
 			Description:         "Valid LenConnectionTopics",
 		},
@@ -106,7 +173,7 @@ func TestHub_DoSubscribe(t *testing.T) {
 			Subscription:        sub,
 			LenConnectionTopics: 1,
 			LenHubTopics:        0,
-			LenHubConnections:   1,
+			LenHubClients:       1,
 			ExpectedErrors:      true,
 			Description:         "Invalid LenHubTopics",
 		},
@@ -114,7 +181,7 @@ func TestHub_DoSubscribe(t *testing.T) {
 			Subscription:        sub,
 			LenConnectionTopics: 1,
 			LenHubTopics:        1,
-			LenHubConnections:   1,
+			LenHubClients:       1,
 			ExpectedErrors:      false,
 			Description:         "Valid LenHubTopics",
 		},
@@ -122,7 +189,7 @@ func TestHub_DoSubscribe(t *testing.T) {
 			Subscription:        sub,
 			LenConnectionTopics: 1,
 			LenHubTopics:        1,
-			LenHubConnections:   0,
+			LenHubClients:       0,
 			ExpectedErrors:      true,
 			Description:         "Invalid LenHubConnections",
 		},
@@ -130,7 +197,7 @@ func TestHub_DoSubscribe(t *testing.T) {
 			Subscription:        sub,
 			LenConnectionTopics: 1,
 			LenHubTopics:        1,
-			LenHubConnections:   1,
+			LenHubClients:       1,
 			ExpectedErrors:      false,
 			Description:         "Valid LenHubConnections",
 		},
@@ -138,7 +205,7 @@ func TestHub_DoSubscribe(t *testing.T) {
 			Subscription:        &Subscription{},
 			LenConnectionTopics: 1,
 			LenHubTopics:        1,
-			LenHubConnections:   1,
+			LenHubClients:       1,
 			ExpectedErrors:      true,
 			Description:         "Invalid subscription",
 		},
@@ -150,11 +217,11 @@ func TestHub_DoSubscribe(t *testing.T) {
 			appConn := app.Hub.connections[testCase.Subscription.connection]
 			if testCase.Subscription != appConn {
 				hasErrors = true
-			} else if testCase.LenConnectionTopics != len(sub.connection.Topics) {
+			} else if testCase.LenConnectionTopics != len(sub.Client.Topics) {
 				hasErrors = true
 			} else if testCase.LenHubTopics != len(app.Hub.topics) {
 				hasErrors = true
-			} else if testCase.LenHubConnections != len(app.Hub.connections) {
+			} else if testCase.LenHubClients != len(app.Hub.clients) {
 				hasErrors = true
 			}
 			if testCase.ExpectedErrors != hasErrors {
@@ -164,19 +231,9 @@ func TestHub_DoSubscribe(t *testing.T) {
 	}
 
 }
+*/
 
-func TestHub_Connections(t *testing.T) {
-	app := NewApp()
-	s := httptest.NewServer(http.HandlerFunc(serveHTTP))
-	defer s.Close()
-	c := newConnection(s.URL, &app.Hub)
-	defer c.ws.Close()
-	app.doRegister(c)
-	if app.Connections() != 1 {
-		t.Fatal()
-	}
-}
-
+/*
 func TestHub_DoUnsubscribe(t *testing.T) {
 	app := NewApp()
 	s := httptest.NewServer(http.HandlerFunc(serveHTTP))
@@ -252,7 +309,9 @@ func TestHub_DoUnsubscribe(t *testing.T) {
 	}
 
 }
+*/
 
+/*
 func TestHub_DoMailbox(t *testing.T) {
 	app := NewApp()
 	s := httptest.NewServer(http.HandlerFunc(serveHTTP))
@@ -282,7 +341,9 @@ func TestHub_DoMailbox(t *testing.T) {
 	}
 	return
 }
+*/
 
+/*
 func TestHub_Publish(t *testing.T) {
 	app := NewApp()
 	m := MailMessage{
@@ -292,22 +353,4 @@ func TestHub_Publish(t *testing.T) {
 	return
 }
 
-// implements ITest
-type fakeDelegate struct {
-	t              *testing.T
-	expectedAuthID string
-}
-
-func (d fakeDelegate) InitSubscriberData(connMap map[string]interface{}) {
-	if connMap["AuthID"] != d.expectedAuthID {
-		d.t.Fatal()
-	}
-}
-
-func TestInitSubscriberData(t *testing.T) {
-	msgMap := map[string]interface{}{
-		"AuthID": "auth0|0000000",
-	}
-	delegate := &fakeDelegate{t, "auth0|0000000"}
-	InitSubscriberData(delegate, msgMap)
-}
+*/
