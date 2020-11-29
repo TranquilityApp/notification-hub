@@ -122,7 +122,9 @@ func (h *Hub) doSubscribe(s *Subscription) {
 	h.topics[s.Topic] = append(h.topics[s.Topic], s.Client)
 
 	h.log.Printf("[DEBUG] Client %s subscribed to topic %s", s.Client.ID, s.Topic)
-	h.OnSubscribe(s)
+	if h.OnSubscribe != nil {
+		h.OnSubscribe(s)
+	}
 }
 
 // doUnregister unregisters a connection from the hub.

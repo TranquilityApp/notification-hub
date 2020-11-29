@@ -1,12 +1,16 @@
 package hub
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/TranquilityApp/middleware"
+	"github.com/codegangsta/negroni"
+	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 )
 
@@ -30,17 +34,150 @@ func serveHTTP(w http.ResponseWriter, r *http.Request) {
 
 func TestHub_ServeHTTP(t *testing.T) {
 	t.Run("GET /ws returns 101", func(t *testing.T) {
-		broker := NewBroker()
+		server := httptest.NewServer(NewBrokerServer())
 
-		server := httptest.NewServer(http.HandlerFunc(broker.ServeHTTP))
 		defer server.Close()
 
-		_ := mustDialWs(t, "ws"+strings.TrimPrefix(server.URL, "http")+"/ws")
+		_ = mustDialWs(t, "ws"+strings.TrimPrefix(server.URL, "http")+"/ws")
 	})
 }
 
+func TestHub_DoRegister(t *testing.T) {
+	t.Run("Register a client", func(t *testing.T) {
+		broker := NewBroker()
+		client := &Client{
+			ID:   "FAKEUSER|ID",
+			send: make(chan []byte, 256),
+		}
+
+		mustRegister(client, t)
+
+	})
+}
+
+func testHub_DoUnregister(t *testing.T) {
+	t.Run("Unregister a previously-registered client", func(t *testing.T) {
+		broker := NewBroker()
+		client := &Client{
+			ID:   "FAKEUSER|ID",
+			send: make(chan []byte, 256),
+		}
+
+		mustRegister(client, t)
+
+		broker.Hub.doUnregister(client)
+		// test handleRemoveClient
+		// test client close
+		// test delete h.clients
+	})
+}
+
+func mustRegister(client *Client, t *testing.T) {
+	broker.doRegister(client)
+
+	if ok := broker.Hub.clients[client]; !ok {
+		t.Fatal("Client did not get registered with the hub")
+	}
+}
+
 func TestHub_DoSubscribe(t *testing.T) {
-	t.Run("Start a server with 1 client and subscribe to two topics", func(t *testing.T) {
+	t.Run("Subscribe a client to one topic", func(t *testing.T) {
+		broker := NewBroker()
+		client := &Client{
+			ID:   "FAKEUSER|ID",
+			send: make(chan []byte, 256),
+		}
+
+		s := &Subscription{
+			Client: client,
+			Topic:  "FAKETOPIC",
+		}
+
+		mustSubscribe(&broker.Hub, s, t)
+	})
+}
+
+func TestHub_DoSubscribeOverNetwork(t *testing.T) {
+	t.Run("Start a server with 1 client and subscribe to one topic", func(t *testing.T) {
+		broker := NewBroker()
+		server := httptest.NewServer(NewBrokerServer())
+		ws := mustDialWs(t, "ws"+strings.TrimPrefix(server.URL, "http")+"/ws")
+
+		defer server.Close()
+		defer ws.Close()
+
+		client := &Client{
+			ID:   "FAKEUSER|ID",
+			send: make(chan []byte, 256),
+		}
+
+		s := &Subscription{
+			Client: client,
+			Topic:  "FAKETOPIC",
+		}
+
+		mustSubscribe(&broker.Hub, s, t)
+	})
+}
+
+func mustSubscribe(hub *Hub, s *Subscription, t *testing.T) {
+	hub.doSubscribe(s)
+
+	clients, ok := hub.topics[s.Topic]
+	if !ok {
+		t.Fatalf("Broker did not subscribe to topic %s", s.Topic)
+	}
+
+	foundClient := false
+	for _, c := range clients {
+		if c == s.Client {
+			foundClient = true
+		}
+	}
+
+	if !foundClient {
+		t.Fatalf("Cannot find client %v", s.Client)
+	}
+
+	if !containsString(s.Topic, s.Client.Topics) {
+		t.Fatalf("Client is not subscribed to topic %s", s.Topic)
+	}
+
+}
+
+type BrokerServer struct {
+	broker *Broker
+	http.Handler
+}
+
+func NewBrokerServer() *BrokerServer {
+	server := new(BrokerServer)
+	broker := NewBroker()
+
+	server.broker = broker
+
+	router := mux.NewRouter()
+	router.Handle("/ws", negroni.New(
+		negroni.HandlerFunc(addUserID),
+		negroni.Wrap(broker),
+	))
+
+	server.Handler = router
+
+	return server
+}
+
+// addUserID is a middleware to add the AuthID of the connecting user from the Authorization
+// header.
+func addUserID(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
+	authID := "FAKEUSER|ID"
+	ctx := context.WithValue(r.Context(), middleware.AuthKey, authID)
+	r = r.WithContext(ctx)
+	next(w, r)
+}
+
+func dosubToss() {
+	/*
 		broker := NewBroker()
 		topics := []string{"topic1", "topic2"}
 		server := httptest.NewServer(http.HandlerFunc(broker.ServeHTTP))
@@ -59,8 +196,7 @@ func TestHub_DoSubscribe(t *testing.T) {
 				t.Errorf("Got %d clients, want %d", len(broker.Hub.clients), 2)
 			}
 		})
-
-	})
+	*/
 }
 
 func writeWSMessage(t *testing.T, conn *websocket.Conn, message string) {
