@@ -99,6 +99,17 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ws.listenRead()
 }
 
+func (h *Hub) getClient(id string) (*Client, bool) {
+	client := &Client{}
+	h.log.Println(h.clients)
+	for c, _ := range h.clients {
+		if c.ID == id {
+			client = c
+		}
+	}
+	return client, len(client.ID) != 0
+}
+
 // doRegister prepares the Hub for the connection
 func (h *Hub) doRegister(client *Client) {
 	h.Lock()
@@ -154,8 +165,7 @@ func (h *Hub) handleRemoveClient(c *Client) {
 	h.handleEmptyTopics(c)
 }
 
-// deleteTopic removes the client from topics in the hub. If the topic has no more clients,
-// then the topic is removed from the hub.
+// deleteTopic removes the client from topics in the hub.
 func (h *Hub) deleteTopicClient(c *Client) {
 	// remove each Client from the hub's topic clients
 	for i := 0; i < len(c.Topics); i++ {
@@ -178,7 +188,8 @@ func (h *Hub) deleteTopicClient(c *Client) {
 	}
 }
 
-// handleEmptyTopics handles the deletion of a topic which has no more clients attached.
+// handleEmptyTopics iterates through the client's topics, checking to see if the hub has
+// any subscribers of that topic left, and if not, the topic is deleted from the hub.
 func (h *Hub) handleEmptyTopics(c *Client) {
 	for _, topic := range c.Topics {
 		// no more clients on topic, remove topic

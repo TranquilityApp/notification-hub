@@ -58,7 +58,9 @@ func (c *Client) SubscribeMultiple(topics []string) {
 // close closes the websocket and the send channel.
 func (c *Client) close() {
 	if !c.closed {
-		if err := c.ws.Close(); err != nil {
+		if c.ws == nil {
+			c.hub.log.Println("[DEBUG] websocket was nil")
+		} else if err := c.ws.Close(); err != nil {
 			c.hub.log.Println("[DEBUG] websocket was already closed:", err)
 		} else {
 			c.hub.log.Println("[DEBUG] websocket closed.")

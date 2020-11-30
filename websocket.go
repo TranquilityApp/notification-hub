@@ -89,6 +89,7 @@ func (w *clientServerWS) listenRead() {
 	defer func() {
 		log.Println("[DEBUG] Calling unregister from listenRead")
 		w.Client.hub.unregister <- w.Client
+		w.Close()
 	}()
 	w.SetReadLimit(maxMessageSize)
 	if err := w.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
@@ -102,7 +103,7 @@ func (w *clientServerWS) listenRead() {
 		_, payload, err := w.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Println("[DEBUG] read message error. Client probably closed connection:", err)
+				log.Println("[DEBUG] read message error. Client probably closed connection. Error: ", err)
 			} else {
 				log.Printf("[DEBUG] Unexpected error: %v", err)
 			}
