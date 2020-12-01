@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"log"
 	"sync"
 	"testing"
 )
@@ -59,10 +60,53 @@ func TestClient_Subscribe(t *testing.T) {
 		}()
 
 		client.Subscribe(topic)
+		wg.Wait()
 
 		if got.Topic != topic {
 			t.Fatalf("Got %s expected %s", got.Topic, topic)
 		}
+	})
+}
+
+func TestClient_SubscribeMultiple(t *testing.T) {
+	t.Run("Subscribe to multiple topics", func(t *testing.T) {
+		broker := NewBroker()
+		client := &Client{
+			ID:   "FAKEUSER|ID",
+			send: make(chan []byte, 256),
+			hub:  &broker.Hub,
+		}
+		mustRegister(broker, client, t)
+
+		topics := []string{"topic1", "topic2"}
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		got := make([]*Subscription, 0)
+
+		go func() {
+			for {
+				if len(got) == 2 {
+					break
+				}
+				subscription := <-broker.Hub.subscribe
+				got = append(got, subscription)
+				wg.Done()
+			}
+		}()
+
+		client.SubscribeMultiple(topics)
+		wg.Wait()
+
+		log.Println(got[0])
+
+		if got[0].Topic != topics[0] {
+			t.Fatalf("Got %s expected %s", got[0].Topic, topics[0])
+		} else if got[1].Topic != topics[1] {
+			t.Fatalf("Got %s expected %s", got[1].Topic, topics[1])
+		}
+
 	})
 }
 

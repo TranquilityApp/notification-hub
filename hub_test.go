@@ -251,6 +251,26 @@ func TestHub_DoSubscribeOverNetwork(t *testing.T) {
 	})
 }
 
+func TestHub_GetClient(t *testing.T) {
+	t.Run("Get client in hub", func(t *testing.T) {
+		broker := NewBroker()
+		client := &Client{
+			ID:   "FAKEUSER|ID",
+			send: make(chan []byte, 256),
+		}
+
+		mustRegister(broker, client, t)
+
+		c, ok := broker.Hub.getClient(client.ID)
+		if !ok {
+			t.Fatal("Unable to get client")
+		} else if c.ID != client.ID {
+			t.Fatalf("Expected %s, got %s", c.ID, client.ID)
+		}
+
+	})
+}
+
 func mustRegister(broker *Broker, client *Client, t *testing.T) {
 	broker.doRegister(client)
 
