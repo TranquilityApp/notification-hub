@@ -16,12 +16,30 @@ type Broker struct {
 	Hub
 }
 
-// NewBroker is a Broker constructor which instantiates the Hub.
-func NewBroker() *Broker {
-	app := &Broker{
-		Hub: *NewHub(os.Stdout, "*"),
+type BrokerOption func(*Broker)
+
+// Notifier is used to track hub channel actions. This is mainly used for testing in hub_test.go.
+type Notifier interface {
+	Notify(s string)
+}
+
+func WithNotifier(n Notifier) BrokerOption {
+	return func(b *Broker) {
+		b.notifier = n
 	}
-	return app
+}
+
+// NewBroker is a Broker constructor which instantiates the Hub.
+func NewBroker(origins []string, opts ...BrokerOption) *Broker {
+	broker := &Broker{
+		Hub: *NewHub(os.Stdout, origins),
+	}
+
+	for _, opt := range opts {
+		opt(broker)
+	}
+
+	return broker
 }
 
 // Hub contains the active clients with thread-safe connection management,
@@ -55,13 +73,15 @@ type Hub struct {
 	// emit messages from publisher
 	emit chan PublishMessage
 
+	notifier Notifier
+
 	OnSubscribe func(*Subscription)
 }
 
 // NewHub Instantiates the Hub.
 // Adds the factory design pattern as a websocket HTTP connection upgrader.
 // Creates the broker's logger
-func NewHub(logOutput io.Writer, origins ...string) *Hub {
+func NewHub(logOutput io.Writer, origins []string) *Hub {
 	h := &Hub{
 		allowedOrigins: origins,
 		register:       make(chan *Client),
@@ -101,7 +121,6 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (h *Hub) getClient(id string) (*Client, bool) {
 	client := &Client{}
-	h.log.Println(h.clients)
 	for c, _ := range h.clients {
 		if c.ID == id {
 			client = c
@@ -114,6 +133,7 @@ func (h *Hub) getClient(id string) (*Client, bool) {
 func (h *Hub) doRegister(client *Client) {
 	h.Lock()
 	defer h.Unlock()
+	h.Notify("register")
 	h.clients[client] = true
 }
 
@@ -121,6 +141,8 @@ func (h *Hub) doRegister(client *Client) {
 func (h *Hub) doSubscribe(s *Subscription) {
 	h.Lock()
 	defer h.Unlock()
+
+	h.Notify("subscribe")
 
 	// initialize topic if it doesn't exist yet.
 	if _, ok := h.topics[s.Topic]; !ok {
@@ -143,7 +165,7 @@ func (h *Hub) doUnregister(c *Client) {
 	h.Lock()
 	defer h.Unlock()
 
-	h.log.Println("[DEBUG] Unregistering connection.")
+	h.Notify("unregister")
 
 	// get the subscriber
 	_, ok := h.clients[c]
@@ -203,8 +225,9 @@ func (h *Hub) handleEmptyTopics(c *Client) {
 // doEmit sends message m to all of the channels of the topic's connections.
 func (h *Hub) doEmit(m PublishMessage) {
 	defer h.Unlock()
-
 	h.Lock()
+
+	h.Notify("emit")
 
 	// get topic subscribers
 	clients, ok := h.topics[m.Topic]
@@ -217,7 +240,6 @@ func (h *Hub) doEmit(m PublishMessage) {
 	for _, c := range clients {
 		c.send <- m.Payload
 	}
-
 }
 
 // Publish sends Mailmessage m to the hub's emitter.
@@ -227,6 +249,12 @@ func (h *Hub) Publish(m PublishMessage) {
 		h.emit <- m
 	}
 	return
+}
+
+func (h *Hub) Notify(s string) {
+	if h.notifier != nil {
+		h.notifier.Notify(s)
+	}
 }
 
 // Run starts the Hub.

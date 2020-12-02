@@ -23,7 +23,7 @@ func TestClient_AddTopic(t *testing.T) {
 
 func TestClient_ClearTopics(t *testing.T) {
 	t.Run("Clear topics for a client", func(t *testing.T) {
-		broker := NewBroker()
+		broker := NewBroker([]string{"*"})
 		client := &Client{
 			ID:   "FAKEUSER|ID",
 			send: make(chan []byte, 256),
@@ -41,7 +41,7 @@ func TestClient_ClearTopics(t *testing.T) {
 
 func TestClient_Subscribe(t *testing.T) {
 	t.Run("Subscribe client to hub", func(t *testing.T) {
-		broker := NewBroker()
+		broker := NewBroker([]string{"*"})
 		client := &Client{
 			ID:   "FAKEUSER|ID",
 			send: make(chan []byte, 256),
@@ -70,7 +70,7 @@ func TestClient_Subscribe(t *testing.T) {
 
 func TestClient_SubscribeMultiple(t *testing.T) {
 	t.Run("Subscribe to multiple topics", func(t *testing.T) {
-		broker := NewBroker()
+		broker := NewBroker([]string{"*"})
 		client := &Client{
 			ID:   "FAKEUSER|ID",
 			send: make(chan []byte, 256),
@@ -112,7 +112,7 @@ func TestClient_SubscribeMultiple(t *testing.T) {
 
 func TestClient_Close(t *testing.T) {
 	t.Run("Close client", func(t *testing.T) {
-		broker := NewBroker()
+		broker := NewBroker([]string{"*"})
 		client := &Client{
 			closed: false,
 			hub:    &broker.Hub,

@@ -24,7 +24,7 @@ func TestHub_ServeHTTP(t *testing.T) {
 
 func TestHub_DoRegister(t *testing.T) {
 	t.Run("Register a client", func(t *testing.T) {
-		broker := NewBroker()
+		broker := NewBroker([]string{"*"})
 		client := &Client{
 			ID:   "FAKEUSER|ID",
 			send: make(chan []byte, 256),
@@ -35,7 +35,7 @@ func TestHub_DoRegister(t *testing.T) {
 
 func TestHub_DoUnregister(t *testing.T) {
 	t.Run("Unregister a previously-registered client", func(t *testing.T) {
-		broker := NewBroker()
+		broker := NewBroker([]string{"*"})
 		client := &Client{
 			ID:   "FAKEUSER|ID",
 			send: make(chan []byte, 256),
@@ -64,7 +64,7 @@ func TestHub_DoUnregister(t *testing.T) {
 
 func TestHub_deleteTopicClient(t *testing.T) {
 	t.Run("Delete a client from a topic in the hub", func(t *testing.T) {
-		broker := NewBroker()
+		broker := NewBroker([]string{"*"})
 		client := &Client{
 			ID:   "FAKEUSER|ID",
 			send: make(chan []byte, 256),
@@ -104,7 +104,7 @@ func TestHub_deleteTopicClient(t *testing.T) {
 
 func TestHub_handleEmptyTopics(t *testing.T) {
 	t.Run("Delete a topic because it has no more clients", func(t *testing.T) {
-		broker := NewBroker()
+		broker := NewBroker([]string{"*"})
 		client := &Client{
 			ID:   "FAKEUSER|ID",
 			send: make(chan []byte, 256),
@@ -160,6 +160,14 @@ func TestHub_doEmit(t *testing.T) {
 
 		mustEmit(brokerServer.broker, client, t)
 	})
+
+	t.Run("Emit to topic that does not exist", func(t *testing.T) {
+		broker := NewBroker([]string{"*"})
+		msg := PublishMessage{
+			Topic: "faketopic",
+		}
+		broker.Hub.doEmit(msg)
+	})
 }
 
 func mustEmit(broker *Broker, client *Client, t *testing.T) {
@@ -185,7 +193,7 @@ func getEmitMsg(c <-chan []byte) string {
 
 func TestHub_Publish(t *testing.T) {
 	t.Run("Publish message to hub", func(t *testing.T) {
-		broker := NewBroker()
+		broker := NewBroker([]string{"*"})
 
 		msg := PublishMessage{
 			Topic:   "FAKETOPIC",
@@ -213,7 +221,7 @@ func TestHub_Publish(t *testing.T) {
 
 func TestHub_DoSubscribe(t *testing.T) {
 	t.Run("Subscribe a client to one topic", func(t *testing.T) {
-		broker := NewBroker()
+		broker := NewBroker([]string{"*"})
 		client := &Client{
 			ID:   "FAKEUSER|ID",
 			send: make(chan []byte, 256),
@@ -253,7 +261,7 @@ func TestHub_DoSubscribeOverNetwork(t *testing.T) {
 
 func TestHub_GetClient(t *testing.T) {
 	t.Run("Get client in hub", func(t *testing.T) {
-		broker := NewBroker()
+		broker := NewBroker([]string{"*"})
 		client := &Client{
 			ID:   "FAKEUSER|ID",
 			send: make(chan []byte, 256),
@@ -268,6 +276,78 @@ func TestHub_GetClient(t *testing.T) {
 			t.Fatalf("Expected %s, got %s", c.ID, client.ID)
 		}
 
+	})
+}
+
+// NotificationSpy is used to track the channel calls from the hub
+type NotificationSpy struct {
+	Calls []string
+	wg    *sync.WaitGroup
+}
+
+// Notify adds a call to NotificationSpy and decrements waitgroup count.
+func (s *NotificationSpy) Notify(notification string) {
+	s.Calls = append(s.Calls, notification)
+	if s.wg != nil {
+		s.wg.Done()
+	}
+}
+
+func TestHub_Run(t *testing.T) {
+	t.Run("All channels waiting", func(t *testing.T) {
+		wg := &sync.WaitGroup{}
+		wg.Add(4)
+
+		spyNotifyPrinter := &NotificationSpy{wg: wg}
+
+		broker := NewBroker(
+			[]string{"*"},
+			WithNotifier(spyNotifyPrinter),
+		)
+
+		registerChan := make(chan *Client, 1)
+		unregisterChan := make(chan *Client, 1)
+		subscribeChan := make(chan *Subscription, 1)
+		emitChan := make(chan PublishMessage, 1)
+		broker.register = registerChan
+		broker.unregister = unregisterChan
+		broker.subscribe = subscribeChan
+		broker.emit = emitChan
+
+		go broker.Run()
+
+		client := &Client{
+			ID:   "FAKEUSER|IDWEOW",
+			send: make(chan []byte, 256),
+			hub:  &broker.Hub,
+		}
+
+		s := &Subscription{
+			Client: client,
+			Topic:  "topic",
+		}
+
+		msg := PublishMessage{Topic: "topic"}
+
+		go func() {
+			broker.register <- client
+			broker.subscribe <- s
+			broker.emit <- msg
+			broker.unregister <- client
+		}()
+
+		wg.Wait()
+
+		want := []string{
+			"register",
+			"subscribe",
+			"publish",
+			"unregister",
+		}
+
+		if len(want) != len(spyNotifyPrinter.Calls) {
+			t.Fatalf("Wanted calls %v got %v", want, spyNotifyPrinter.Calls)
+		}
 	})
 }
 
@@ -311,7 +391,8 @@ type BrokerServer struct {
 
 func NewBrokerServer() *BrokerServer {
 	server := new(BrokerServer)
-	broker := NewBroker()
+	broker := NewBroker([]string{"*"})
+
 	go broker.Run()
 
 	server.broker = broker

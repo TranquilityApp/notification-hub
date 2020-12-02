@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -54,17 +53,16 @@ func newClientServerWS(w http.ResponseWriter, r *http.Request, origins []string)
 
 // checkOrigin checks the requests origin
 func checkOrigin(r *http.Request, allowedOrigins []string) bool {
-	origin := r.Header["Origin"]
-	if len(origin) == 0 {
+	origins := r.Header["Origin"]
+	if len(origins) == 0 {
 		return true
 	}
-	u, err := url.Parse(origin[0])
-	if err != nil {
-		return false
-	}
+
+	origin := origins[0]
+
 	var allow bool
 	for _, o := range allowedOrigins {
-		if o == u.Host {
+		if o == origin {
 			allow = true
 			break
 		}
@@ -77,7 +75,7 @@ func checkOrigin(r *http.Request, allowedOrigins []string) bool {
 		log.Printf(
 			"[DEBUG] none of allowed origins: %s matched: %s\n",
 			strings.Join(allowedOrigins, ", "),
-			u.Host,
+			origin,
 		)
 	}
 	return allow
