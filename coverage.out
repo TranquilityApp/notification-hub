@@ -32,7 +32,7 @@ github.com/truescotian/pubsub/hub.go:148.37,150.3 1 1
 github.com/truescotian/pubsub/hub.go:158.26,160.3 1 0
 github.com/truescotian/pubsub/hub.go:164.39,172.9 5 1
 github.com/truescotian/pubsub/hub.go:177.2,179.22 3 1
-github.com/truescotian/pubsub/hub.go:172.9,175.3 2 0
+github.com/truescotian/pubsub/hub.go:172.9,175.3 2 1
 github.com/truescotian/pubsub/hub.go:185.45,188.2 2 1
 github.com/truescotian/pubsub/hub.go:191.44,193.37 1 1
 github.com/truescotian/pubsub/hub.go:193.37,198.36 3 1
