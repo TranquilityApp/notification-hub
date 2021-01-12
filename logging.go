@@ -5,6 +5,7 @@ import (
 	"io"
 )
 
+// LogLevel is the default logging level
 var LogLevel string = "DEBUG"
 
 var levels = []string{
