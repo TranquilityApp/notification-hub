@@ -1,313 +1,434 @@
 package hub
 
 import (
-	"fmt"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
+	"github.com/TranquilityApp/middleware"
+	"github.com/codegangsta/negroni"
+	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 )
 
-var upgrader = websocket.Upgrader{}
-
-func serveHTTP(w http.ResponseWriter, r *http.Request) {
-	c, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
-	}
-	defer c.Close()
-	for {
-		mt, message, err := c.ReadMessage()
-		if err != nil {
-			break
-		}
-		err = c.WriteMessage(mt, message)
-		if err != nil {
-			break
-		}
-	}
-}
-
 func TestHub_ServeHTTP(t *testing.T) {
-	app := NewApp()
-	s := httptest.NewServer(http.HandlerFunc(app.ServeHTTP))
-	s.Close()
-}
-
-func newConnection(url string, hub *Hub) (c *connection) {
-	// Convert http://127.0.0.1 to ws://127.0.0.1
-	u := "ws" + strings.TrimPrefix(url, "http")
-
-	// Connect to the server
-	ws, _, err := websocket.DefaultDialer.Dial(u, nil)
-	if err != nil {
-		return nil
-	}
-
-	c = &connection{send: make(chan []byte, 256), ws: ws, hub: hub}
-	return c
+	t.Run("GET /ws returns 101", func(t *testing.T) {
+		server := httptest.NewServer(NewBrokerServer())
+		defer server.Close()
+		_ = mustDialWs(t, "ws"+strings.TrimPrefix(server.URL, "http")+"/ws")
+	})
 }
 
 func TestHub_DoRegister(t *testing.T) {
-	app := NewApp()
-	s := httptest.NewServer(http.HandlerFunc(serveHTTP))
-	defer s.Close()
-	c := newConnection(s.URL, &app.Hub)
-	app.doRegister(c)
-	_, ok := app.Hub.connections[c]
-	if !ok {
-		t.Fatal()
+	t.Run("Register a client", func(t *testing.T) {
+		broker := NewBroker([]string{"*"})
+		client := &Client{
+			ID:   "FAKEUSER|ID",
+			send: make(chan []byte, 256),
+		}
+		mustRegister(broker, client, t)
+	})
+}
+
+func TestHub_DoUnregister(t *testing.T) {
+	t.Run("Unregister a previously-registered client", func(t *testing.T) {
+		broker := NewBroker([]string{"*"})
+		client := &Client{
+			ID:   "FAKEUSER|ID",
+			send: make(chan []byte, 256),
+			hub:  &broker.Hub,
+		}
+		mustRegister(broker, client, t)
+
+		broker.Hub.doUnregister(client)
+
+		// hub should have no topics
+		if len(broker.Hub.topics) != 0 {
+			t.Fatalf("Incorrect number of topics, expected %d got %d", 0, len(broker.Hub.topics))
+		}
+
+		// hub should have no clients
+		if len(broker.Hub.clients) != 0 {
+			t.Fatalf("Incorrect number of clients, expected %d got %d", 0, len(broker.Hub.clients))
+		}
+
+		// client.close should = true
+		if client == nil || !client.closed {
+			t.Fatal("Expected client to by closed but closed is true")
+		}
+	})
+}
+
+func TestHub_deleteTopicClient(t *testing.T) {
+	t.Run("Delete a client from a topic in the hub", func(t *testing.T) {
+		broker := NewBroker([]string{"*"})
+		client := &Client{
+			ID:   "FAKEUSER|ID",
+			send: make(chan []byte, 256),
+		}
+
+		mustRegister(broker, client, t)
+
+		s := &Subscription{
+			Client: client,
+			Topic:  "FAKETOPIC",
+		}
+
+		mustSubscribe(&broker.Hub, s, t)
+
+		broker.Hub.deleteTopicClient(client)
+
+		// topics should have "FAKETOPIC" with no clients
+		clients, ok := broker.Hub.topics["FAKETOPIC"]
+		if !ok {
+			t.Fatalf("Hub should have topic %s", "FAKETOPIC")
+		}
+
+		found := false
+		for _, c := range clients {
+			if c == client {
+				found = true
+				break
+			}
+		}
+
+		if found {
+			t.Fatalf("Client should not be subscribed to topic %s", "FAKETOPIC")
+		}
+
+	})
+}
+
+func TestHub_handleEmptyTopics(t *testing.T) {
+	t.Run("Delete a topic because it has no more clients", func(t *testing.T) {
+		broker := NewBroker([]string{"*"})
+		client := &Client{
+			ID:   "FAKEUSER|ID",
+			send: make(chan []byte, 256),
+		}
+
+		mustRegister(broker, client, t)
+
+		s := &Subscription{
+			Client: client,
+			Topic:  "FAKETOPIC",
+		}
+
+		// subscribe to topic
+		mustSubscribe(&broker.Hub, s, t)
+
+		// unsubscribe from topic
+		broker.Hub.deleteTopicClient(client)
+
+		// topic should still exist in hub at this point
+		if len(broker.Hub.topics) != 1 {
+			t.Fatalf("Broker hub has %d topics, expected %d", len(broker.Hub.topics), 1)
+		}
+
+		// remove topic from hub
+		broker.Hub.handleEmptyTopics(client)
+
+		if len(broker.Hub.topics) != 0 {
+			t.Fatalf("Failed to remove topic %s from hub", s.Topic)
+		}
+	})
+}
+
+func TestHub_doEmit(t *testing.T) {
+	t.Run("Emit topic from hub", func(t *testing.T) {
+		brokerServer := NewBrokerServer()
+		server := httptest.NewServer(brokerServer)
+		ws := mustDialWs(t, "ws"+strings.TrimPrefix(server.URL, "http")+"/ws")
+
+		defer server.Close()
+		defer ws.Close()
+
+		client := &Client{
+			ID:   "FAKEUSER|ID",
+			send: make(chan []byte, 256),
+		}
+
+		s := &Subscription{
+			Client: client,
+			Topic:  "FAKETOPIC",
+		}
+
+		mustSubscribe(&brokerServer.broker.Hub, s, t)
+
+		mustEmit(brokerServer.broker, client, t)
+	})
+
+	t.Run("Emit to topic that does not exist", func(t *testing.T) {
+		broker := NewBroker([]string{"*"})
+		msg := PublishMessage{
+			Topic: "faketopic",
+		}
+		broker.Hub.doEmit(msg)
+	})
+}
+
+func mustEmit(broker *Broker, client *Client, t *testing.T) {
+	want := "payload"
+
+	msg := PublishMessage{
+		Topic:   "FAKETOPIC",
+		Payload: []byte(want),
 	}
-	if len(app.Hub.connections) != 1 {
-		t.Fatal()
+
+	broker.Hub.doEmit(msg)
+
+	got := getEmitMsg(client.send)
+	if got != want {
+		t.Fatalf("Got %s want %s", got, want)
 	}
 }
 
-func TestHub_DoSubscribe(t *testing.T) {
-	app := NewApp()
-	s := httptest.NewServer(http.HandlerFunc(serveHTTP))
-	defer s.Close()
-	c := newConnection(s.URL, &app.Hub)
-	defer c.ws.Close()
-	sub := &Subscription{
-		AuthID:     "auth0|000000",
-		Topic:      "0000000",
-		connection: c,
-	}
-	app.doSubscribe(sub)
-
-	testCases := []struct {
-		Subscription        *Subscription
-		LenConnectionTopics int
-		LenHubTopics        int
-		LenHubConnections   int
-		ExpectedErrors      bool
-		Description         string
-	}{
-		{
-			Subscription:        sub,
-			LenConnectionTopics: 0,
-			LenHubTopics:        1,
-			LenHubConnections:   1,
-			ExpectedErrors:      true,
-			Description:         "Invalid LenConnectionTopics",
-		},
-		{
-			Subscription:        sub,
-			LenConnectionTopics: 1,
-			LenHubTopics:        1,
-			LenHubConnections:   1,
-			ExpectedErrors:      false,
-			Description:         "Valid LenConnectionTopics",
-		},
-		{
-			Subscription:        sub,
-			LenConnectionTopics: 1,
-			LenHubTopics:        0,
-			LenHubConnections:   1,
-			ExpectedErrors:      true,
-			Description:         "Invalid LenHubTopics",
-		},
-		{
-			Subscription:        sub,
-			LenConnectionTopics: 1,
-			LenHubTopics:        1,
-			LenHubConnections:   1,
-			ExpectedErrors:      false,
-			Description:         "Valid LenHubTopics",
-		},
-		{
-			Subscription:        sub,
-			LenConnectionTopics: 1,
-			LenHubTopics:        1,
-			LenHubConnections:   0,
-			ExpectedErrors:      true,
-			Description:         "Invalid LenHubConnections",
-		},
-		{
-			Subscription:        sub,
-			LenConnectionTopics: 1,
-			LenHubTopics:        1,
-			LenHubConnections:   1,
-			ExpectedErrors:      false,
-			Description:         "Valid LenHubConnections",
-		},
-		{
-			Subscription:        &Subscription{},
-			LenConnectionTopics: 1,
-			LenHubTopics:        1,
-			LenHubConnections:   1,
-			ExpectedErrors:      true,
-			Description:         "Invalid subscription",
-		},
-	}
-
-	for _, testCase := range testCases {
-		t.Run(fmt.Sprintf(testCase.Description), func(t *testing.T) {
-			var hasErrors = false
-			appConn := app.Hub.connections[testCase.Subscription.connection]
-			if testCase.Subscription != appConn {
-				hasErrors = true
-			} else if testCase.LenConnectionTopics != len(sub.connection.Topics) {
-				hasErrors = true
-			} else if testCase.LenHubTopics != len(app.Hub.topics) {
-				hasErrors = true
-			} else if testCase.LenHubConnections != len(app.Hub.connections) {
-				hasErrors = true
-			}
-			if testCase.ExpectedErrors != hasErrors {
-				t.Fatal()
-			}
-		})
-	}
-
-}
-
-func TestHub_Connections(t *testing.T) {
-	app := NewApp()
-	s := httptest.NewServer(http.HandlerFunc(serveHTTP))
-	defer s.Close()
-	c := newConnection(s.URL, &app.Hub)
-	defer c.ws.Close()
-	app.doRegister(c)
-	if app.Connections() != 1 {
-		t.Fatal()
-	}
-}
-
-func TestHub_DoUnsubscribe(t *testing.T) {
-	app := NewApp()
-	s := httptest.NewServer(http.HandlerFunc(serveHTTP))
-	defer s.Close()
-	c1 := newConnection(s.URL, &app.Hub)
-	defer c1.ws.Close()
-	c2 := newConnection(s.URL, &app.Hub)
-	defer c2.ws.Close()
-
-	sub1 := &Subscription{
-		AuthID:     "auth0|000000",
-		Topic:      "0000000",
-		connection: c1,
-	}
-	sub2 := &Subscription{
-		AuthID:     "auth0|000000",
-		Topic:      "0000000",
-		connection: c2,
-	}
-	app.doSubscribe(sub1)
-	app.doSubscribe(sub2)
-	app.doUnregister(c1)
-
-	testCases := []struct {
-		Topic                  string
-		LenHubTopicConnections int
-		LenHubTopic            int
-		ExpectedErrors         bool
-		Description            string
-	}{
-		{
-			Topic:                  "0000000",
-			LenHubTopicConnections: 2,
-			LenHubTopic:            1,
-			ExpectedErrors:         true,
-			Description:            "Invalid number of connections for topic",
-		},
-		{
-			Topic:                  "0000000",
-			LenHubTopicConnections: 1,
-			LenHubTopic:            1,
-			ExpectedErrors:         false,
-			Description:            "Valid number of connections for topic",
-		},
-		{
-			Topic:                  "0000000",
-			LenHubTopicConnections: 1,
-			LenHubTopic:            0,
-			ExpectedErrors:         true,
-			Description:            "Invalid number of topics",
-		},
-		{
-			Topic:                  "0000000",
-			LenHubTopicConnections: 1,
-			LenHubTopic:            1,
-			ExpectedErrors:         false,
-			Description:            "Valid number of topics",
-		},
-	}
-
-	for _, testCase := range testCases {
-		t.Run(fmt.Sprintf(testCase.Description), func(t *testing.T) {
-			var hasErrors = false
-			if testCase.LenHubTopicConnections != len(app.Hub.topics[testCase.Topic]) {
-				hasErrors = true
-			} else if testCase.LenHubTopic != len(app.Hub.topics[testCase.Topic]) {
-				hasErrors = true
-			}
-			if testCase.ExpectedErrors != hasErrors {
-				t.Fatal()
-			}
-		})
-	}
-
-}
-
-func TestHub_DoMailbox(t *testing.T) {
-	app := NewApp()
-	s := httptest.NewServer(http.HandlerFunc(serveHTTP))
-	defer s.Close()
-	c := newConnection(s.URL, &app.Hub)
-	defer c.ws.Close()
-
-	sub := &Subscription{
-		AuthID:     "auth0|000000",
-		Topic:      "0000000",
-		connection: c,
-	}
-	app.doSubscribe(sub)
-
-	m := MailMessage{
-		Topic:   "0000000",
-		Message: []byte("message"),
-	}
-	app.doMailbox(m)
-
-	message, ok := <-c.send // check if message sent on channel
-	if !ok {
-		t.Fatal("Socket closed")
-	}
-	if len(message) == 0 {
-		t.Fatal("Message didn't send")
-	}
-	return
+func getEmitMsg(c <-chan []byte) string {
+	receive := <-c
+	return string(receive)
 }
 
 func TestHub_Publish(t *testing.T) {
-	app := NewApp()
-	m := MailMessage{
-		Message: []byte("message"),
-	}
-	app.Publish(m) // only returns if there was no topic
-	return
+	t.Run("Publish message to hub", func(t *testing.T) {
+		broker := NewBroker([]string{"*"})
+
+		msg := PublishMessage{
+			Topic:   "FAKETOPIC",
+			Payload: []byte("payload"),
+		}
+
+		var got PublishMessage
+		var wg sync.WaitGroup
+		wg.Add(1)
+
+		go func() {
+			got = <-broker.Hub.emit // write
+			wg.Done()
+		}()
+
+		broker.Hub.Publish(msg)
+		wg.Wait()
+
+		if got.Topic != msg.Topic { // read
+			t.Fatalf("Expected %s got %s", msg.Topic, got.Topic)
+		}
+
+	})
 }
 
-// implements ITest
-type fakeDelegate struct {
-	t              *testing.T
-	expectedAuthID string
+func TestHub_DoSubscribe(t *testing.T) {
+	t.Run("Subscribe a client to one topic", func(t *testing.T) {
+		broker := NewBroker([]string{"*"})
+		client := &Client{
+			ID:   "FAKEUSER|ID",
+			send: make(chan []byte, 256),
+		}
+
+		s := &Subscription{
+			Client: client,
+			Topic:  "FAKETOPIC",
+		}
+
+		mustSubscribe(&broker.Hub, s, t)
+	})
 }
 
-func (d fakeDelegate) InitSubscriberData(connMap map[string]interface{}) {
-	if connMap["AuthID"] != d.expectedAuthID {
-		d.t.Fatal()
+func TestHub_DoSubscribeOverNetwork(t *testing.T) {
+	t.Run("Start a server with 1 client and subscribe to one topic", func(t *testing.T) {
+		brokerServer := NewBrokerServer()
+		server := httptest.NewServer(brokerServer)
+		ws := mustDialWs(t, "ws"+strings.TrimPrefix(server.URL, "http")+"/ws")
+
+		defer server.Close()
+		defer ws.Close()
+
+		client := &Client{
+			ID:   "FAKEUSER|ID",
+			send: make(chan []byte, 256),
+		}
+
+		s := &Subscription{
+			Client: client,
+			Topic:  "FAKETOPIC",
+		}
+
+		mustSubscribe(&brokerServer.broker.Hub, s, t)
+	})
+}
+
+func TestHub_GetClient(t *testing.T) {
+	t.Run("Get client in hub", func(t *testing.T) {
+		broker := NewBroker([]string{"*"})
+		client := &Client{
+			ID:   "FAKEUSER|ID",
+			send: make(chan []byte, 256),
+		}
+
+		mustRegister(broker, client, t)
+
+		c, ok := broker.Hub.getClient(client.ID)
+		if !ok {
+			t.Fatal("Unable to get client")
+		} else if c.ID != client.ID {
+			t.Fatalf("Expected %s, got %s", c.ID, client.ID)
+		}
+
+	})
+}
+
+// NotificationSpy is used to track the channel calls from the hub
+type NotificationSpy struct {
+	Calls []string
+	wg    *sync.WaitGroup
+}
+
+// Notify adds a call to NotificationSpy and decrements waitgroup count.
+func (s *NotificationSpy) Notify(notification string) {
+	s.Calls = append(s.Calls, notification)
+	if s.wg != nil {
+		s.wg.Done()
 	}
 }
 
-func TestInitSubscriberData(t *testing.T) {
-	msgMap := map[string]interface{}{
-		"AuthID": "auth0|0000000",
+func TestHub_Run(t *testing.T) {
+	t.Run("All channels waiting", func(t *testing.T) {
+		wg := &sync.WaitGroup{}
+		wg.Add(4)
+
+		spyNotifyPrinter := &NotificationSpy{wg: wg}
+
+		broker := NewBroker(
+			[]string{"*"},
+			WithNotifier(spyNotifyPrinter),
+		)
+
+		registerChan := make(chan *Client, 1)
+		unregisterChan := make(chan *Client, 1)
+		subscribeChan := make(chan *Subscription, 1)
+		emitChan := make(chan PublishMessage, 1)
+		broker.register = registerChan
+		broker.unregister = unregisterChan
+		broker.subscribe = subscribeChan
+		broker.emit = emitChan
+
+		go broker.Run()
+
+		client := &Client{
+			ID:   "FAKEUSER|IDWEOW",
+			send: make(chan []byte, 256),
+			hub:  &broker.Hub,
+		}
+
+		s := &Subscription{
+			Client: client,
+			Topic:  "topic",
+		}
+
+		msg := PublishMessage{Topic: "topic"}
+
+		go func() {
+			broker.register <- client
+			broker.subscribe <- s
+			broker.emit <- msg
+			broker.unregister <- client
+		}()
+
+		wg.Wait()
+
+		want := []string{
+			"register",
+			"subscribe",
+			"publish",
+			"unregister",
+		}
+
+		if len(want) != len(spyNotifyPrinter.Calls) {
+			t.Fatalf("Wanted calls %v got %v", want, spyNotifyPrinter.Calls)
+		}
+	})
+}
+
+func mustRegister(broker *Broker, client *Client, t *testing.T) {
+	broker.doRegister(client)
+
+	if ok := broker.Hub.clients[client]; !ok {
+		t.Fatal("Client did not get registered with the hub")
 	}
-	delegate := &fakeDelegate{t, "auth0|0000000"}
-	InitSubscriberData(delegate, msgMap)
+}
+
+func mustSubscribe(hub *Hub, s *Subscription, t *testing.T) {
+	hub.doSubscribe(s)
+
+	clients, ok := hub.topics[s.Topic]
+	if !ok {
+		t.Fatalf("Broker did not subscribe to topic %s", s.Topic)
+	}
+
+	foundClient := false
+	for _, c := range clients {
+		if c == s.Client {
+			foundClient = true
+		}
+	}
+
+	if !foundClient {
+		t.Fatalf("Cannot find client %v", s.Client)
+	}
+
+	if !containsString(s.Topic, s.Client.Topics) {
+		t.Fatalf("Client is not subscribed to topic %s", s.Topic)
+	}
+
+}
+
+type BrokerServer struct {
+	broker *Broker
+	http.Handler
+}
+
+func NewBrokerServer() *BrokerServer {
+	server := new(BrokerServer)
+	broker := NewBroker([]string{"*"})
+
+	go broker.Run()
+
+	server.broker = broker
+
+	router := mux.NewRouter()
+	router.Handle("/ws", negroni.New(
+		negroni.HandlerFunc(addUserID),
+		negroni.Wrap(broker),
+	))
+
+	server.Handler = router
+
+	return server
+}
+
+// addUserID is a middleware to add the AuthID of the connecting user from the Authorization
+// header.
+func addUserID(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
+	authID := "FAKEUSER|ID"
+	ctx := context.WithValue(r.Context(), middleware.AuthKey, authID)
+	r = r.WithContext(ctx)
+	next(w, r)
+}
+
+func writeWSMessage(t *testing.T, conn *websocket.Conn, message []byte) {
+	t.Helper()
+	if err := conn.WriteMessage(websocket.TextMessage, message); err != nil {
+		t.Fatalf("Could not send message over ws connection %v", err)
+	}
+}
+
+func mustDialWs(t *testing.T, url string) *websocket.Conn {
+	ws, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		t.Fatalf("could not open a ws connection on %s %v", url, err)
+	}
+
+	return ws
 }
