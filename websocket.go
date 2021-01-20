@@ -21,7 +21,7 @@ var (
 	pingPeriod = (pongWait * 9) / 10
 
 	// MaxMessageSize is the maximum message size allowed from peer.
-	maxMessageSize int64 = 512
+	maxMessageSize int64 = 8192
 )
 
 // upgrader is the websocket connection upgrader
