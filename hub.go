@@ -1,14 +1,14 @@
 package hub
 
 import (
-	"github.com/TranquilityApp/middleware"
-
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
+
+	"github.com/google/uuid"
 )
 
 // Broker is the application structure
@@ -107,9 +107,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	}
 
-	userID := strings.Split(r.Context().Value(middleware.AuthKey).(string), "|")[1]
-
-	client := NewClient(ws, h, userID)
+	client := NewClient(ws, h, fmt.Sprintf("%s", uuid.New()))
 
 	h.register <- client
 
@@ -117,16 +115,6 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	go ws.listenWrite()
 	ws.listenRead()
-}
-
-func (h *Hub) getClient(id string) (*Client, bool) {
-	client := &Client{}
-	for c, _ := range h.clients {
-		if c.ID == id {
-			client = c
-		}
-	}
-	return client, len(client.ID) != 0
 }
 
 // doRegister prepares the Hub for the connection
@@ -248,7 +236,6 @@ func (h *Hub) Publish(m PublishMessage) {
 	if len(m.Topic) > 0 {
 		h.emit <- m
 	}
-	return
 }
 
 func (h *Hub) Notify(s string) {

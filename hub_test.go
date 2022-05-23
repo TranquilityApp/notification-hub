@@ -8,7 +8,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/TranquilityApp/middleware"
 	"github.com/codegangsta/negroni"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
@@ -399,7 +398,7 @@ func NewBrokerServer() *BrokerServer {
 
 	router := mux.NewRouter()
 	router.Handle("/ws", negroni.New(
-		negroni.HandlerFunc(addUserID),
+		negroni.HandlerFunc(AddUserID),
 		negroni.Wrap(broker),
 	))
 
@@ -408,11 +407,11 @@ func NewBrokerServer() *BrokerServer {
 	return server
 }
 
-// addUserID is a middleware to add the AuthID of the connecting user from the Authorization
+// AddUserID is a middleware to add the AuthID of the connecting user from the Authorization
 // header.
-func addUserID(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
-	authID := "FAKEUSER|ID"
-	ctx := context.WithValue(r.Context(), middleware.AuthKey, authID)
+func AddUserID(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
+	authID := ParseJWTUserIDFromUrl(r)
+	ctx := context.WithValue(r.Context(), AuthKey, authID)
 	r = r.WithContext(ctx)
 	next(w, r)
 }
