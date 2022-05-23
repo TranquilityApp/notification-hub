@@ -97,6 +97,16 @@ func NewHub(logOutput io.Writer, origins []string) *Hub {
 	return h
 }
 
+func (h *Hub) getClient(id string) (*Client, bool) {
+	client := &Client{}
+	for c, _ := range h.clients {
+		if c.ID == id {
+			client = c
+		}
+	}
+	return client, len(client.ID) != 0
+}
+
 // ServeHTTP upgrades HTTP connection to a ws/wss connection.
 // Sets up the connection and registers it to the hub for
 // read/write operations.
