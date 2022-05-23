@@ -1,7 +1,6 @@
 package hub
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -398,22 +397,12 @@ func NewBrokerServer() *BrokerServer {
 
 	router := mux.NewRouter()
 	router.Handle("/ws", negroni.New(
-		negroni.HandlerFunc(AddUserID),
 		negroni.Wrap(broker),
 	))
 
 	server.Handler = router
 
 	return server
-}
-
-// AddUserID is a middleware to add the AuthID of the connecting user from the Authorization
-// header.
-func AddUserID(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
-	authID := ParseJWTUserIDFromUrl(r)
-	ctx := context.WithValue(r.Context(), AuthKey, authID)
-	r = r.WithContext(ctx)
-	next(w, r)
 }
 
 func writeWSMessage(t *testing.T, conn *websocket.Conn, message []byte) {
