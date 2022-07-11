@@ -1,7 +1,6 @@
 package hub
 
 import (
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -99,7 +98,7 @@ func NewHub(logOutput io.Writer, origins []string) *Hub {
 
 func (h *Hub) getClient(id string) (*Client, bool) {
 	client := &Client{}
-	for c, _ := range h.clients {
+	for c := range h.clients {
 		if c.ID == id {
 			client = c
 		}
@@ -117,7 +116,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	}
 
-	client := NewClient(ws, h, fmt.Sprintf("%s", uuid.New()))
+	client := NewClient(ws, h, uuid.New().String())
 
 	h.register <- client
 

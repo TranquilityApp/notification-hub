@@ -405,13 +405,6 @@ func NewBrokerServer() *BrokerServer {
 	return server
 }
 
-func writeWSMessage(t *testing.T, conn *websocket.Conn, message []byte) {
-	t.Helper()
-	if err := conn.WriteMessage(websocket.TextMessage, message); err != nil {
-		t.Fatalf("Could not send message over ws connection %v", err)
-	}
-}
-
 func mustDialWs(t *testing.T, url string) *websocket.Conn {
 	ws, _, err := websocket.DefaultDialer.Dial(url, nil)
 	if err != nil {
