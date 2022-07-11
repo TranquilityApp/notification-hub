@@ -1,14 +1,12 @@
 package hub
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 
-	"github.com/TranquilityApp/middleware"
 	"github.com/codegangsta/negroni"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
@@ -399,29 +397,12 @@ func NewBrokerServer() *BrokerServer {
 
 	router := mux.NewRouter()
 	router.Handle("/ws", negroni.New(
-		negroni.HandlerFunc(addUserID),
 		negroni.Wrap(broker),
 	))
 
 	server.Handler = router
 
 	return server
-}
-
-// addUserID is a middleware to add the AuthID of the connecting user from the Authorization
-// header.
-func addUserID(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
-	authID := "FAKEUSER|ID"
-	ctx := context.WithValue(r.Context(), middleware.AuthKey, authID)
-	r = r.WithContext(ctx)
-	next(w, r)
-}
-
-func writeWSMessage(t *testing.T, conn *websocket.Conn, message []byte) {
-	t.Helper()
-	if err := conn.WriteMessage(websocket.TextMessage, message); err != nil {
-		t.Fatalf("Could not send message over ws connection %v", err)
-	}
 }
 
 func mustDialWs(t *testing.T, url string) *websocket.Conn {
