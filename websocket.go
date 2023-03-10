@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gorilla/websocket"
+	"nhooyr.io/websocket"
 )
 
 var (
@@ -24,31 +24,13 @@ var (
 	maxMessageSize int64 = 8192
 )
 
-// upgrader is the websocket connection upgrader
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-}
-
-type clientServerWS struct {
+type subscriberServerWS struct {
 	*websocket.Conn
-	*Client
+	*Subscriber
 }
 
-func (w *clientServerWS) SetClient(c *Client) {
-	w.Client = c
-}
-
-func newClientServerWS(w http.ResponseWriter, r *http.Request, origins []string) (*clientServerWS, error) {
-	upgrader.CheckOrigin = func(r *http.Request) bool { return checkOrigin(r, origins) }
-	conn, err := upgrader.Upgrade(w, r, nil)
-
-	if err != nil {
-		log.Printf("[ERROR] failed to upgrade connection to websocket %v", err)
-		return nil, err
-	}
-
-	return &clientServerWS{Conn: conn}, nil
+func (w *subscriberServerWS) SetSubscriber(s *Subscriber) {
+	w.Subscriber = s
 }
 
 // checkOrigin checks the requests origin
@@ -83,10 +65,10 @@ func checkOrigin(r *http.Request, allowedOrigins []string) bool {
 }
 
 // listenRead pumps messages from the websocket connection to the hub.
-func (w *clientServerWS) listenRead() {
+func (w *subscriberServerWS) listenRead() {
 	defer func() {
 		log.Println("[DEBUG] Calling unregister from listenRead")
-		w.Client.hub.unregister <- w.Client
+		w.Subscriber.hub.unregister <- w.Subscriber
 		w.Close()
 	}()
 	w.SetReadLimit(maxMessageSize)
@@ -97,11 +79,11 @@ func (w *clientServerWS) listenRead() {
 		return w.SetReadDeadline(time.Now().Add(pongWait))
 	})
 	for {
-		// read message from ws sent by Client
+		// read message from ws sent by Subscriber
 		_, payload, err := w.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Println("[DEBUG] read message error. Client probably closed connection. Error: ", err)
+				log.Println("[DEBUG] read message error. Subscriber probably closed connection. Error: ", err)
 			} else {
 				log.Printf("[DEBUG] Unexpected error: %v", err)
 			}
@@ -120,8 +102,8 @@ func (w *clientServerWS) listenRead() {
 
 		switch action := actionMessage.Action; action {
 		case "subscribe":
-			log.Printf("[DEBUG] Client %s is subscribing. Removing all old subscriptions.", w.Client.ID)
-			w.Client.ClearTopics()
+			log.Printf("[DEBUG] Subscriber %s is subscribing. Removing all old subscriptions.", w.Subscriber.ID)
+			w.Subscriber.ClearTopics()
 			subMsg := &SubscriptionsMessage{}
 			if err := json.Unmarshal(payload, subMsg); err != nil {
 				log.Printf(
@@ -130,7 +112,7 @@ func (w *clientServerWS) listenRead() {
 				)
 				continue
 			}
-			w.Client.SubscribeMultiple(subMsg.Topics)
+			w.Subscriber.SubscribeMultiple(subMsg.Topics)
 		default:
 			pubMsg := &PublishMessage{}
 			if err := json.Unmarshal(payload, pubMsg); err != nil {
@@ -140,14 +122,14 @@ func (w *clientServerWS) listenRead() {
 				)
 				continue
 			}
-			w.Client.hub.Publish(*pubMsg)
+			w.Subscriber.hub.Publish(*pubMsg)
 		}
 	}
 
 }
 
 // listenWrite pumps messages from the hub to the websocket connection.
-func (w *clientServerWS) listenWrite() {
+func (w *subscriberServerWS) listenWrite() {
 	// write to connection
 	ticker := time.NewTicker(pingPeriod)
 	write := func(mt int, payload []byte) error {
@@ -166,23 +148,23 @@ func (w *clientServerWS) listenWrite() {
 	for {
 		select {
 		// listen for messages
-		case message, ok := <-w.Client.send:
+		case message, ok := <-w.Subscriber.send:
 			if !ok {
 				// ws was closed, so close on our end
 				err := write(websocket.CloseMessage, []byte{})
 				if err != nil {
-					w.Client.hub.log.Println("[ERROR] socket already closed:", err)
+					w.Subscriber.hub.log.Println("[ERROR] socket already closed:", err)
 				}
 				return
 			}
 			// write to ws
 			if err := write(websocket.TextMessage, message); err != nil {
-				w.Client.hub.log.Println("[ERROR] failed to write socket message:", err)
+				w.Subscriber.hub.log.Println("[ERROR] failed to write socket message:", err)
 				return
 			}
 		case <-ticker.C: // ping pong ws connection
 			if err := write(websocket.PingMessage, []byte{}); err != nil {
-				w.Client.hub.log.Println("[ERROR] failed to ping socket:", err)
+				w.Subscriber.hub.log.Println("[ERROR] failed to ping socket:", err)
 				return
 			}
 		}

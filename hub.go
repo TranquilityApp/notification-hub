@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
+	"nhooyr.io/websocket"
 )
 
 // Broker is the application structure
@@ -41,18 +42,18 @@ func NewBroker(origins []string, opts ...BrokerOption) *Broker {
 	return broker
 }
 
-// Hub contains the active clients with thread-safe connection management,
-// handles subscriptions and broadcasts messages to the clients.
+// Hub contains the active subscribers with thread-safe connection management,
+// handles subscriptions and broadcasts messages to the subscribers.
 type Hub struct {
 
 	// protects connections
 	sync.Mutex
 
-	// registered clients
-	clients map[*Client]bool
+	// registered subscribers
+	subscribers map[*Subscriber]bool
 
-	// topics with its subscribers (clients)
-	topics map[string][]*Client
+	// topics with its subscribers (subscribers)
+	topics map[string][]*Subscriber
 
 	// logger
 	log *log.Logger
@@ -60,11 +61,11 @@ type Hub struct {
 	// allowed origins for http requests.
 	allowedOrigins []string
 
-	// register requests from clients.
-	register chan *Client
+	// register requests from subscribers.
+	register chan *Subscriber
 
-	// unregister requests from clients.
-	unregister chan *Client
+	// unregister requests from subscribers.
+	unregister chan *Subscriber
 
 	// subscribe requests
 	subscribe chan *Subscription
@@ -83,12 +84,12 @@ type Hub struct {
 func NewHub(logOutput io.Writer, origins []string) *Hub {
 	h := &Hub{
 		allowedOrigins: origins,
-		register:       make(chan *Client),
-		unregister:     make(chan *Client),
-		clients:        make(map[*Client]bool),
+		register:       make(chan *Subscriber),
+		unregister:     make(chan *Subscriber),
+		subscribers:        make(map[*Subscriber]bool),
 		subscribe:      make(chan *Subscription),
 		emit:           make(chan PublishMessage),
-		topics:         make(map[string][]*Client),
+		topics:         make(map[string][]*Subscriber),
 	}
 
 	h.log = log.New(leveledLogWriter(logOutput), "", log.LstdFlags)
@@ -96,14 +97,14 @@ func NewHub(logOutput io.Writer, origins []string) *Hub {
 	return h
 }
 
-func (h *Hub) getClient(id string) (*Client, bool) {
-	client := &Client{}
-	for c := range h.clients {
-		if c.ID == id {
-			client = c
+func (h *Hub) getSubscriber(id string) (*Subscriber, bool) {
+	subscriber := &Subscriber{}
+	for s := range h.subscribers {
+		if s.ID == id {
+			subscriber = s
 		}
 	}
-	return client, len(client.ID) != 0
+	return subscriber, len(subscriber.ID) != 0
 }
 
 // ServeHTTP upgrades HTTP connection to a ws/wss connection.
@@ -111,27 +112,30 @@ func (h *Hub) getClient(id string) (*Client, bool) {
 // read/write operations.
 func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
-	ws, err := newClientServerWS(w, r, h.allowedOrigins)
+	// TODO I think origins goes in here instead of nil. Theyre in h.allowedOrigins
+	c, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	}
 
-	client := NewClient(ws, h, uuid.New().String())
+	csws := &subscriberServerWS{Conn: c}
 
-	h.register <- client
+	subscriber := NewSubscriber(csws, h, uuid.New().String())
 
-	ws.SetClient(client)
+	h.register <- subscriber
 
-	go ws.listenWrite()
-	ws.listenRead()
+	csws.SetSubscriber(subscriber)
+
+	go csws.listenWrite()
+	csws.listenRead()
 }
 
 // doRegister prepares the Hub for the connection
-func (h *Hub) doRegister(client *Client) {
+func (h *Hub) doRegister(subscriber *Subscriber) {
 	h.Lock()
 	defer h.Unlock()
 	h.Notify("register")
-	h.clients[client] = true
+	h.subscribers[subscriber] = true
 }
 
 // doSubscribe adds the topic to the connection's slice of topics.
@@ -143,77 +147,77 @@ func (h *Hub) doSubscribe(s *Subscription) {
 
 	// initialize topic if it doesn't exist yet.
 	if _, ok := h.topics[s.Topic]; !ok {
-		h.topics[s.Topic] = make([]*Client, 0)
+		h.topics[s.Topic] = make([]*Subscriber, 0)
 	}
 
-	s.Client.AddTopic(s.Topic)
+	s.Subscriber.AddTopic(s.Topic)
 
-	// add Client to the hub topic's Clients.
-	h.topics[s.Topic] = append(h.topics[s.Topic], s.Client)
+	// add Subscriber to the hub topic's Subscribers.
+	h.topics[s.Topic] = append(h.topics[s.Topic], s.Subscriber)
 
-	h.log.Printf("[DEBUG] Client %s subscribed to topic %s", s.Client.ID, s.Topic)
+	h.log.Printf("[DEBUG] Subscriber %s subscribed to topic %s", s.Subscriber.ID, s.Topic)
 	if h.OnSubscribe != nil {
 		h.OnSubscribe(s)
 	}
 }
 
 // doUnregister unregisters a connection from the hub.
-func (h *Hub) doUnregister(c *Client) {
+func (h *Hub) doUnregister(s *Subscriber) {
 	h.Lock()
 	defer h.Unlock()
 
 	h.Notify("unregister")
 
 	// get the subscriber
-	_, ok := h.clients[c]
+	_, ok := h.subscribers[s]
 	if !ok {
 		h.log.Println("[WARN] cannot unregister connection, it is not registered.")
 		return
 	}
 
-	h.handleRemoveClient(c)
-	c.close()
-	delete(h.clients, c)
+	h.handleRemoveSubscriber(s)
+	s.close()
+	delete(h.subscribers, s)
 }
 
-// handleRemoveClient handles the removal of deleting a client from the hub.
-// This includes deleting the client from the hub's topics map, and
-// cleaning up the hub's topics map if a topic has no more clients.
-func (h *Hub) handleRemoveClient(c *Client) {
-	h.deleteTopicClient(c)
-	h.handleEmptyTopics(c)
+// handleRemoveSubscriber handles the removal of deleting a subscriber from the hub.
+// This includes deleting the subscriber from the hub's topics map, and
+// cleaning up the hub's topics map if a topic has no more subscribers.
+func (h *Hub) handleRemoveSubscriber(s *Subscriber) {
+	h.deleteTopicSubscriber(s)
+	h.handleEmptyTopics(s)
 }
 
-// deleteTopic removes the client from topics in the hub.
-func (h *Hub) deleteTopicClient(c *Client) {
-	// remove each Client from the hub's topic clients
-	for i := 0; i < len(c.Topics); i++ {
-		clients := h.topics[c.Topics[i]]
+// deleteTopic removes the subscriber from topics in the hub.
+func (h *Hub) deleteTopicSubscriber(s *Subscriber) {
+	// remove each Subscriber from the hub's topic Subscribers
+	for i := 0; i < len(s.Topics); i++ {
+		subscribers := h.topics[s.Topics[i]]
 		foundIdx := -1
 
-		// find the index of the client in the list of clients subscribed to this topic
-		for idx, client := range clients {
-			if client == c {
+		// find the index of the subscriber in the list of Subscribers subscribed to this topic
+		for idx, subscriber := range subscribers {
+			if subscriber == s {
 				foundIdx = idx
 				break
 			}
 		}
 
-		// use the found index to remove this client from the topic's clients
+		// use the found index to remove this subscriber from the topic's Subscribers
 		if foundIdx != -1 {
-			h.log.Printf("[DEBUG] Removing client %s from hub topic %s", c.ID, c.Topics[i])
-			h.topics[c.Topics[i]] = append(clients[:foundIdx], clients[foundIdx+1:]...)
+			h.log.Printf("[DEBUG] Removing subscriber %s from hub topic %s", s.ID, s.Topics[i])
+			h.topics[s.Topics[i]] = append(subscribers[:foundIdx], subscribers[foundIdx+1:]...)
 		}
 	}
 }
 
-// handleEmptyTopics iterates through the client's topics, checking to see if the hub has
+// handleEmptyTopics iterates through the subscriber's topics, checking to see if the hub has
 // any subscribers of that topic left, and if not, the topic is deleted from the hub.
-func (h *Hub) handleEmptyTopics(c *Client) {
+func (h *Hub) handleEmptyTopics(c *Subscriber) {
 	for _, topic := range c.Topics {
-		// no more clients on topic, remove topic
+		// no more Subscribers on topic, remove topic
 		if len(h.topics[topic]) == 0 {
-			h.log.Printf("[DEBUG] topic %s has no more clients, deleting from hub.", topic)
+			h.log.Printf("[DEBUG] topic %s has no more Subscribers, deleting from hub.", topic)
 			delete(h.topics, topic)
 		}
 	}
@@ -227,15 +231,15 @@ func (h *Hub) doEmit(m PublishMessage) {
 	h.Notify("emit")
 
 	// get topic subscribers
-	clients, ok := h.topics[m.Topic]
+	subscribers, ok := h.topics[m.Topic]
 	if !ok {
 		h.log.Println("[DEBUG] there are no subscriptions from:", m.Topic)
 		return
 	}
 
-	h.log.Printf("[DEBUG] Sending message to topic %v. Client count %d", m.Topic, len(clients))
-	for _, c := range clients {
-		c.send <- m.Payload
+	h.log.Printf("[DEBUG] Sending message to topic %v. Subscriber count %d", m.Topic, len(subscribers))
+	for _, s := range subscribers {
+		s.send <- m.Payload
 	}
 }
 

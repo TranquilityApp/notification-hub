@@ -21,97 +21,97 @@ func TestHub_ServeHTTP(t *testing.T) {
 }
 
 func TestHub_DoRegister(t *testing.T) {
-	t.Run("Register a client", func(t *testing.T) {
+	t.Run("Register a subscriber", func(t *testing.T) {
 		broker := NewBroker([]string{"*"})
-		client := &Client{
+		subscriber := &Subscriber{
 			ID:   "FAKEUSER|ID",
 			send: make(chan []byte, 256),
 		}
-		mustRegister(broker, client, t)
+		mustRegister(broker, subscriber, t)
 	})
 }
 
 func TestHub_DoUnregister(t *testing.T) {
-	t.Run("Unregister a previously-registered client", func(t *testing.T) {
+	t.Run("Unregister a previously-registered subscriber", func(t *testing.T) {
 		broker := NewBroker([]string{"*"})
-		client := &Client{
+		subscriber := &Subscriber{
 			ID:   "FAKEUSER|ID",
 			send: make(chan []byte, 256),
 			hub:  &broker.Hub,
 		}
-		mustRegister(broker, client, t)
+		mustRegister(broker, subscriber, t)
 
-		broker.Hub.doUnregister(client)
+		broker.Hub.doUnregister(subscriber)
 
 		// hub should have no topics
 		if len(broker.Hub.topics) != 0 {
 			t.Fatalf("Incorrect number of topics, expected %d got %d", 0, len(broker.Hub.topics))
 		}
 
-		// hub should have no clients
-		if len(broker.Hub.clients) != 0 {
-			t.Fatalf("Incorrect number of clients, expected %d got %d", 0, len(broker.Hub.clients))
+		// hub should have no subscribers
+		if len(broker.Hub.subscribers) != 0 {
+			t.Fatalf("Incorrect number of subscribers, expected %d got %d", 0, len(broker.Hub.subscribers))
 		}
 
-		// client.close should = true
-		if client == nil || !client.closed {
-			t.Fatal("Expected client to by closed but closed is true")
+		// subscriber.close should = true
+		if subscriber == nil || !subscriber.closed {
+			t.Fatal("Expected subscriber to by closed but closed is true")
 		}
 	})
 }
 
-func TestHub_deleteTopicClient(t *testing.T) {
-	t.Run("Delete a client from a topic in the hub", func(t *testing.T) {
+func TestHub_deleteTopicSubscriber(t *testing.T) {
+	t.Run("Delete a subscriber from a topic in the hub", func(t *testing.T) {
 		broker := NewBroker([]string{"*"})
-		client := &Client{
+		subscriber := &Subscriber{
 			ID:   "FAKEUSER|ID",
 			send: make(chan []byte, 256),
 		}
 
-		mustRegister(broker, client, t)
+		mustRegister(broker, subscriber, t)
 
 		s := &Subscription{
-			Client: client,
+			Subscriber: subscriber,
 			Topic:  "FAKETOPIC",
 		}
 
 		mustSubscribe(&broker.Hub, s, t)
 
-		broker.Hub.deleteTopicClient(client)
+		broker.Hub.deleteTopicSubscriber(subscriber)
 
-		// topics should have "FAKETOPIC" with no clients
-		clients, ok := broker.Hub.topics["FAKETOPIC"]
+		// topics should have "FAKETOPIC" with no subscribers
+		subscribers, ok := broker.Hub.topics["FAKETOPIC"]
 		if !ok {
 			t.Fatalf("Hub should have topic %s", "FAKETOPIC")
 		}
 
 		found := false
-		for _, c := range clients {
-			if c == client {
+		for _, c := range subscribers {
+			if c == subscriber {
 				found = true
 				break
 			}
 		}
 
 		if found {
-			t.Fatalf("Client should not be subscribed to topic %s", "FAKETOPIC")
+			t.Fatalf("Subscriber should not be subscribed to topic %s", "FAKETOPIC")
 		}
 
 	})
 }
 
 func TestHub_handleEmptyTopics(t *testing.T) {
-	t.Run("Delete a topic because it has no more clients", func(t *testing.T) {
+	t.Run("Delete a topic because it has no more subscribers", func(t *testing.T) {
 		broker := NewBroker([]string{"*"})
-		client := &Client{
+		subscriber := &Subscriber{
 			ID:   "FAKEUSER|ID",
 			send: make(chan []byte, 256),
 		}
 
-		mustRegister(broker, client, t)
+		mustRegister(broker, subscriber, t)
 
 		s := &Subscription{
-			Client: client,
+			Subscriber: subscriber,
 			Topic:  "FAKETOPIC",
 		}
 
@@ -119,7 +119,7 @@ func TestHub_handleEmptyTopics(t *testing.T) {
 		mustSubscribe(&broker.Hub, s, t)
 
 		// unsubscribe from topic
-		broker.Hub.deleteTopicClient(client)
+		broker.Hub.deleteTopicSubscriber(subscriber)
 
 		// topic should still exist in hub at this point
 		if len(broker.Hub.topics) != 1 {
@@ -127,7 +127,7 @@ func TestHub_handleEmptyTopics(t *testing.T) {
 		}
 
 		// remove topic from hub
-		broker.Hub.handleEmptyTopics(client)
+		broker.Hub.handleEmptyTopics(subscriber)
 
 		if len(broker.Hub.topics) != 0 {
 			t.Fatalf("Failed to remove topic %s from hub", s.Topic)
@@ -144,19 +144,19 @@ func TestHub_doEmit(t *testing.T) {
 		defer server.Close()
 		defer ws.Close()
 
-		client := &Client{
+		subscriber := &Subscriber{
 			ID:   "FAKEUSER|ID",
 			send: make(chan []byte, 256),
 		}
 
 		s := &Subscription{
-			Client: client,
+			Subscriber: subscriber,
 			Topic:  "FAKETOPIC",
 		}
 
 		mustSubscribe(&brokerServer.broker.Hub, s, t)
 
-		mustEmit(brokerServer.broker, client, t)
+		mustEmit(brokerServer.broker, subscriber, t)
 	})
 
 	t.Run("Emit to topic that does not exist", func(t *testing.T) {
@@ -168,7 +168,7 @@ func TestHub_doEmit(t *testing.T) {
 	})
 }
 
-func mustEmit(broker *Broker, client *Client, t *testing.T) {
+func mustEmit(broker *Broker, subscriber *Subscriber, t *testing.T) {
 	want := "payload"
 
 	msg := PublishMessage{
@@ -178,7 +178,7 @@ func mustEmit(broker *Broker, client *Client, t *testing.T) {
 
 	broker.Hub.doEmit(msg)
 
-	got := getEmitMsg(client.send)
+	got := getEmitMsg(subscriber.send)
 	if got != want {
 		t.Fatalf("Got %s want %s", got, want)
 	}
@@ -218,15 +218,15 @@ func TestHub_Publish(t *testing.T) {
 }
 
 func TestHub_DoSubscribe(t *testing.T) {
-	t.Run("Subscribe a client to one topic", func(t *testing.T) {
+	t.Run("Subscribe a subscriber to one topic", func(t *testing.T) {
 		broker := NewBroker([]string{"*"})
-		client := &Client{
+		subscriber := &Subscriber{
 			ID:   "FAKEUSER|ID",
 			send: make(chan []byte, 256),
 		}
 
 		s := &Subscription{
-			Client: client,
+			Subscriber: subscriber,
 			Topic:  "FAKETOPIC",
 		}
 
@@ -235,7 +235,7 @@ func TestHub_DoSubscribe(t *testing.T) {
 }
 
 func TestHub_DoSubscribeOverNetwork(t *testing.T) {
-	t.Run("Start a server with 1 client and subscribe to one topic", func(t *testing.T) {
+	t.Run("Start a server with 1 subscriber and subscribe to one topic", func(t *testing.T) {
 		brokerServer := NewBrokerServer()
 		server := httptest.NewServer(brokerServer)
 		ws := mustDialWs(t, "ws"+strings.TrimPrefix(server.URL, "http")+"/ws")
@@ -243,13 +243,13 @@ func TestHub_DoSubscribeOverNetwork(t *testing.T) {
 		defer server.Close()
 		defer ws.Close()
 
-		client := &Client{
+		subscriber := &Subscriber{
 			ID:   "FAKEUSER|ID",
 			send: make(chan []byte, 256),
 		}
 
 		s := &Subscription{
-			Client: client,
+			Subscriber: subscriber,
 			Topic:  "FAKETOPIC",
 		}
 
@@ -257,21 +257,21 @@ func TestHub_DoSubscribeOverNetwork(t *testing.T) {
 	})
 }
 
-func TestHub_GetClient(t *testing.T) {
-	t.Run("Get client in hub", func(t *testing.T) {
+func TestHub_GetSubscriber(t *testing.T) {
+	t.Run("Get subscriber in hub", func(t *testing.T) {
 		broker := NewBroker([]string{"*"})
-		client := &Client{
+		subscriber := &Subscriber{
 			ID:   "FAKEUSER|ID",
 			send: make(chan []byte, 256),
 		}
 
-		mustRegister(broker, client, t)
+		mustRegister(broker, subscriber, t)
 
-		c, ok := broker.Hub.getClient(client.ID)
+		c, ok := broker.Hub.getSubscriber(subscriber.ID)
 		if !ok {
-			t.Fatal("Unable to get client")
-		} else if c.ID != client.ID {
-			t.Fatalf("Expected %s, got %s", c.ID, client.ID)
+			t.Fatal("Unable to get subscriber")
+		} else if c.ID != subscriber.ID {
+			t.Fatalf("Expected %s, got %s", c.ID, subscriber.ID)
 		}
 
 	})
@@ -303,8 +303,8 @@ func TestHub_Run(t *testing.T) {
 			WithNotifier(spyNotifyPrinter),
 		)
 
-		registerChan := make(chan *Client, 1)
-		unregisterChan := make(chan *Client, 1)
+		registerChan := make(chan *Subscriber, 1)
+		unregisterChan := make(chan *Subscriber, 1)
 		subscribeChan := make(chan *Subscription, 1)
 		emitChan := make(chan PublishMessage, 1)
 		broker.register = registerChan
@@ -314,24 +314,24 @@ func TestHub_Run(t *testing.T) {
 
 		go broker.Run()
 
-		client := &Client{
+		subscriber := &Subscriber{
 			ID:   "FAKEUSER|IDWEOW",
 			send: make(chan []byte, 256),
 			hub:  &broker.Hub,
 		}
 
 		s := &Subscription{
-			Client: client,
+			Subscriber: subscriber,
 			Topic:  "topic",
 		}
 
 		msg := PublishMessage{Topic: "topic"}
 
 		go func() {
-			broker.register <- client
+			broker.register <- subscriber
 			broker.subscribe <- s
 			broker.emit <- msg
-			broker.unregister <- client
+			broker.unregister <- subscriber
 		}()
 
 		wg.Wait()
@@ -349,35 +349,35 @@ func TestHub_Run(t *testing.T) {
 	})
 }
 
-func mustRegister(broker *Broker, client *Client, t *testing.T) {
-	broker.doRegister(client)
+func mustRegister(broker *Broker, subscriber *Subscriber, t *testing.T) {
+	broker.doRegister(subscriber)
 
-	if ok := broker.Hub.clients[client]; !ok {
-		t.Fatal("Client did not get registered with the hub")
+	if ok := broker.Hub.subscribers[subscriber]; !ok {
+		t.Fatal("Subscriber did not get registered with the hub")
 	}
 }
 
 func mustSubscribe(hub *Hub, s *Subscription, t *testing.T) {
 	hub.doSubscribe(s)
 
-	clients, ok := hub.topics[s.Topic]
+	subscribers, ok := hub.topics[s.Topic]
 	if !ok {
 		t.Fatalf("Broker did not subscribe to topic %s", s.Topic)
 	}
 
-	foundClient := false
-	for _, c := range clients {
-		if c == s.Client {
-			foundClient = true
+	foundSubscriber := false
+	for _, c := range subscribers {
+		if c == s.Subscriber {
+			foundSubscriber = true
 		}
 	}
 
-	if !foundClient {
-		t.Fatalf("Cannot find client %v", s.Client)
+	if !foundSubscriber {
+		t.Fatalf("Cannot find subscriber %v", s.Subscriber)
 	}
 
-	if !containsString(s.Topic, s.Client.Topics) {
-		t.Fatalf("Client is not subscribed to topic %s", s.Topic)
+	if !containsString(s.Topic, s.Subscriber.Topics) {
+		t.Fatalf("Subscriber is not subscribed to topic %s", s.Topic)
 	}
 
 }
