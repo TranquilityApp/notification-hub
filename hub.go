@@ -189,12 +189,6 @@ func (h *Hub) addSubscriber(s *Subscriber) {
 	h.Notify("register")
 }
 
-func RemoveSubscriberFromTopicSubscribers(currSubscribers []*Subscriber, index int) []*Subscriber {
-	ret := make([]*Subscriber, 0)
-	ret = append(ret, currSubscribers[:index]...)
-	return append(ret, currSubscribers[index+1:]...)
-}
-
 // deleteTopicsFromSubscriber removes the subscriber from topics in the hub.
 func (h *Hub) deleteTopicsFromSubscriber(s *Subscriber) {
 	// remove this subscriber from the topics
@@ -213,7 +207,7 @@ func (h *Hub) deleteTopicsFromSubscriber(s *Subscriber) {
 		// use the found index to remove this subscriber from the topic's Subscribers
 		if idxOfTopicSubscriber != -1 {
 			h.log.Printf("[DEBUG] Removing subscriber %s from hub topic %s", s.ID, s.Topics[i])
-			h.topics[s.Topics[i]] = RemoveSubscriberFromTopicSubscribers(h.topics[s.Topics[i]], idxOfTopicSubscriber)
+			h.topics[s.Topics[i]] = removeTopicSubscriber(h.topics[s.Topics[i]], idxOfTopicSubscriber)
 		}
 	}
 }
@@ -265,4 +259,10 @@ func (h *Hub) Notify(s string) {
 	if h.notifier != nil {
 		h.notifier.Notify(s)
 	}
+}
+
+func removeTopicSubscriber(currSubscribers []*Subscriber, index int) []*Subscriber {
+	newSubs := make([]*Subscriber, 0)
+	newSubs = append(newSubs, currSubscribers[:index]...)
+	return append(newSubs, currSubscribers[index+1:]...)
 }
