@@ -6,48 +6,48 @@ import (
 	"testing"
 )
 
-func mustAddTopic(client *Client, t *testing.T, topic string) {
-	client.AddTopic(topic)
-	if len(client.Topics) == 0 {
-		t.Fatalf("Unable to add topic %s to client", topic)
+func mustAddTopic(subscriber *Subscriber, t *testing.T, topic string) {
+	subscriber.AddTopic(topic)
+	if len(subscriber.Topics) == 0 {
+		t.Fatalf("Unable to add topic %s to subscriber", topic)
 	}
 }
 
-func TestClient_AddTopic(t *testing.T) {
-	t.Run("Add topic to client", func(t *testing.T) {
-		client := &Client{}
+func TestSubscriber_AddTopic(t *testing.T) {
+	t.Run("Add topic to subscriber", func(t *testing.T) {
+		subscriber := &Subscriber{}
 		topic := "faketopic"
-		mustAddTopic(client, t, topic)
+		mustAddTopic(subscriber, t, topic)
 	})
 }
 
-func TestClient_ClearTopics(t *testing.T) {
-	t.Run("Clear topics for a client", func(t *testing.T) {
+func TestSubscriber_ClearTopics(t *testing.T) {
+	t.Run("Clear topics for a subscriber", func(t *testing.T) {
 		broker := NewBroker([]string{"*"})
-		client := &Client{
+		subscriber := &Subscriber{
 			ID:   "FAKEUSER|ID",
 			send: make(chan []byte, 256),
 			hub:  &broker.Hub,
 		}
-		mustRegister(broker, client, t)
+		mustRegister(broker, subscriber, t)
 		topic := "fakeTopic"
-		mustAddTopic(client, t, topic)
-		client.ClearTopics()
-		if len(client.Topics) > 0 {
-			t.Fatal("Failed to clearTopics on client")
+		mustAddTopic(subscriber, t, topic)
+		subscriber.ClearTopics()
+		if len(subscriber.Topics) > 0 {
+			t.Fatal("Failed to clearTopics on subscriber")
 		}
 	})
 }
 
-func TestClient_Subscribe(t *testing.T) {
-	t.Run("Subscribe client to hub", func(t *testing.T) {
+func TestSubscriber_Subscribe(t *testing.T) {
+	t.Run("Subscribe subscriber to hub", func(t *testing.T) {
 		broker := NewBroker([]string{"*"})
-		client := &Client{
+		subscriber := &Subscriber{
 			ID:   "FAKEUSER|ID",
 			send: make(chan []byte, 256),
 			hub:  &broker.Hub,
 		}
-		mustRegister(broker, client, t)
+		mustRegister(broker, subscriber, t)
 		topic := "fakeTopic"
 
 		var got *Subscription
@@ -59,7 +59,7 @@ func TestClient_Subscribe(t *testing.T) {
 			wg.Done()
 		}()
 
-		client.Subscribe(topic)
+		subscriber.Subscribe(topic)
 		wg.Wait()
 
 		if got.Topic != topic {
@@ -68,15 +68,15 @@ func TestClient_Subscribe(t *testing.T) {
 	})
 }
 
-func TestClient_SubscribeMultiple(t *testing.T) {
+func TestSubscriber_SubscribeMultiple(t *testing.T) {
 	t.Run("Subscribe to multiple topics", func(t *testing.T) {
 		broker := NewBroker([]string{"*"})
-		client := &Client{
+		subscriber := &Subscriber{
 			ID:   "FAKEUSER|ID",
 			send: make(chan []byte, 256),
 			hub:  &broker.Hub,
 		}
-		mustRegister(broker, client, t)
+		mustRegister(broker, subscriber, t)
 
 		topics := []string{"topic1", "topic2"}
 
@@ -96,7 +96,7 @@ func TestClient_SubscribeMultiple(t *testing.T) {
 			}
 		}()
 
-		client.SubscribeMultiple(topics)
+		subscriber.SubscribeMultiple(topics)
 		wg.Wait()
 
 		log.Println(got[0])
@@ -110,17 +110,17 @@ func TestClient_SubscribeMultiple(t *testing.T) {
 	})
 }
 
-func TestClient_Close(t *testing.T) {
-	t.Run("Close client", func(t *testing.T) {
+func TestSubscriber_Close(t *testing.T) {
+	t.Run("Close subscriber", func(t *testing.T) {
 		broker := NewBroker([]string{"*"})
-		client := &Client{
+		subscriber := &Subscriber{
 			closed: false,
 			hub:    &broker.Hub,
 		}
 
-		client.close()
+		subscriber.close()
 		want := true
-		got := client.closed
+		got := subscriber.closed
 		if got != want {
 			t.Fatalf("Got %t expected %t", got, want)
 		}

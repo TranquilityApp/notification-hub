@@ -1,4 +1,4 @@
-module github.com/TranquilityApp/websocket-hub
+module github.com/TranquilityApp/websocket-hub/v2
 
 go 1.17
 
@@ -7,4 +7,8 @@ require (
 	github.com/google/uuid v1.3.0
 	github.com/gorilla/mux v1.8.0
 	github.com/gorilla/websocket v1.4.2
+	golang.org/x/time v0.3.0
+	nhooyr.io/websocket v1.8.7
 )
+
+require github.com/klauspost/compress v1.10.3 // indirect
